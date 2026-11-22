@@ -1,0 +1,58 @@
+configuration:
+  network:
+    name: Twingate network
+    description: >-
+      Your Twingate network name, the first part of your Admin Console
+      address (for example acme for acme.twingate.com). Use the same value as
+      in the Twingate Connector add-on.
+  log_level:
+    name: Log level
+    description: >-
+      Level of the Gateway's system log. It does not change the audit log.
+  request_headers:
+    name: Request headers
+    description: >-
+      HTTP headers that the Gateway adds to every request it forwards, for
+      every Web App Resource that uses this Gateway. A header with the same
+      name sent by the client is replaced. For Home Assistant, add the name
+      Authorization with the value Bearer, a space and a long-lived access
+      token. Values are never logged.
+    fields:
+      name:
+        name: Header name
+        description: >-
+          The HTTP header name, for example Authorization.
+      value:
+        name: Header value
+        description: >-
+          A static value, or text with one Gateway placeholder (see the
+          Documentation tab).
+  certificate_ip_addresses:
+    name: Certificate IP addresses
+    description: >-
+      IPv4 addresses for which the add-on issues a TLS certificate, for
+      clients that reach a Resource on this Gateway by IP address instead of
+      by alias. IPv6 is not supported. Leave empty when clients use an alias.
+  audit_log:
+    name: Audit log
+    description: >-
+      Where the Gateway writes its audit log of every request: the add-on log
+      (addon_log) or audit.log in this add-on's configuration folder under
+      addon_configs (file). The audit log includes the request headers sent
+      by clients.
+  custom_ca_certfile:
+    name: Custom CA certificate file
+    description: >-
+      Optional. A PEM CA certificate in the Home Assistant ssl folder, for
+      example twingate/ca.crt, to use instead of the CA created by the
+      add-on. Set together with the custom CA private key file.
+  custom_ca_keyfile:
+    name: Custom CA private key file
+    description: >-
+      Optional. The unencrypted PEM private key of the custom CA certificate,
+      in the Home Assistant ssl folder, for example twingate/ca.key.
+network:
+  8443/tcp: >-
+    Gateway TLS listener that the Twingate Connector forwards Web App
+    connections to. Register the Home Assistant IP address and this port as
+    the Gateway address in Twingate.
