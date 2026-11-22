@@ -3,11 +3,12 @@
 ![Supports aarch64 Architecture][aarch64-shield]
 ![Supports amd64 Architecture][amd64-shield]
 
-Give scripts and AI agents access to the Home Assistant API through Twingate
-without giving them a Home Assistant credential.
+This add-on installs the Twingate Gateway, allowing scripts and AI agents to
+access the Home Assistant API through Twingate without a Home Assistant
+credential.
 
-This add-on runs the [Twingate Gateway](https://github.com/Twingate/gateway) in
-Web App mode. The Gateway adds `Authorization: Bearer <long-lived-token>` to
+It runs the [Twingate Gateway](https://github.com/Twingate/gateway) in Web App
+mode. The Gateway adds `Authorization: Bearer <long-lived-token>` to
 every request it forwards to Home Assistant, for the REST API and the Model
 Context Protocol endpoint `/api/mcp`. Access is granted and revoked in Twingate
 per user, group or service account. It works together with the Twingate

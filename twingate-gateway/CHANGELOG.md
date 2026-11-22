@@ -17,3 +17,8 @@
 - Warn at startup that request headers are sent to every Web App Resource
   that uses the Gateway.
 - Container health check against the Gateway's `/healthz` endpoint.
+
+## 0.1.1
+
+- Add the add-on icon and logo.
+- Align the add-on description with the Twingate Connector add-on.

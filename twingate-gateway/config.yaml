@@ -1,9 +1,7 @@
 name: "Twingate Gateway"
-version: "0.1.0"
+description: "Gateway for Twingate"
+version: "0.1.1"
 slug: "twingate-gateway"
-description: >-
-  Twingate Gateway in Web App mode: injects HTTP request headers into
-  requests for a Twingate Web App Resource
 arch:
   - aarch64
   - amd64
