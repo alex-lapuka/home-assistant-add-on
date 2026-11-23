@@ -1,0 +1,97 @@
+#!/bin/sh
+# ==============================================================================
+# Twingate Gateway add-on: s6-log for the Gateway's standard output.
+#
+# Standard input is the Gateway's standard output (see the twingate-gateway
+# service), which carries the audit log with audit_log: addon_log; s6 keeps
+# this pipe open while this service restarts. s6-log copies every line
+# unchanged to standard output, the add-on log: -l 0 never splits a line,
+# however long, and nothing is prepended. It also keeps a copy of the newest
+# lines in a small rotated folder in memory, LOG_DIR, which the audit relay
+# (twingate-gateway-relay) follows for the Web UI. No Python runs in this
+# path, so the relay and the Web UI can neither slow down nor stop the
+# Gateway.
+#
+# s6-log runs as the unprivileged user audit-log. The entries contain request
+# headers, so the folder is readable by the relay's group (audit-relay) only,
+# not by the Web UI's user (nobody): new files get the folder's group
+# (setgid) and mode 0640 (umask 027). The lock file is readable by audit-log
+# only, so that no other user can lock it and keep s6-log from starting.
+# current is rotated at about 512 KiB and the 2 newest rotated files are
+# kept.
+#
+# s6-log runs without -b: if the folder cannot be written (for example
+# because /dev/shm is full), the lines are missing from the copy, while the
+# add-on log and the Gateway continue. s6-log keeps the lines it could not
+# write in memory and retries every 2 seconds. With -b, it would stop reading
+# the Gateway's output instead, and the Gateway would stop with it.
+#
+# s6-log never gives memory back, and it holds about 3 copies of the longest
+# line it has read, so its memory is limited: s6-softlimit -a limits its
+# address space, which covers all memory s6-log can allocate, on any kernel
+# (s6-log, a static program, takes less than 300 KiB of it itself). 64 MiB is
+# enough for audit lines of about 18 MB and for about 60 MB of lines waiting
+# for the folder. When s6-log needs more, it exits with 111, and finish makes
+# s6-log copy to the add-on log only (below). Lost are only the lines that
+# s6-log had read but not yet written to the add-on log: it writes them after
+# each read from the pipe (at most 8 KiB), so the lines of that read and the
+# line it was reading.
+#
+# If the folder cannot be used, or s6-log failed with it before (see finish),
+# s6-log copies the Gateway's output to the add-on log only, with the same
+# limit. It then holds 2 copies of the longest line: a line of more than about
+# 30 MB makes it exit with 111, and the next s6-log continues with the rest
+# of that line.
+#
+# s6-log reports on file descriptor 3 (notification-fd) when it is ready. s6
+# then starts it again right after it exited instead of 1 second later,
+# unless it was ready for less than 1 second, so a failing s6-log starts at
+# most once a second. While no s6-log runs, the Gateway's output waits in the
+# pipe (64 KiB); only when the pipe is full does the Gateway wait.
+# ==============================================================================
+LOG_DIR=/dev/shm/twingate-gateway-audit
+# s6-rc copies this file into the service directory at every start of the
+# add-on; finish removes it when s6-log exited with an error. Removing a file
+# needs no free space, so this works even when the disk is full.
+USE_LOG_DIR=./data/use-log-dir
+# The limit of s6-log's address space, in bytes (64 MiB).
+MEMORY_LIMIT=67108864
+
+# s6-overlay keeps the container environment, including the Supervisor
+# token, in this directory for with-contenv, readable by every user. Only
+# root needs it, so close it before anything runs as another user (the relay
+# and the Web UI do the same). s6-log runs either way.
+chmod 0700 /run/s6/container_environment ||
+    echo "twingate-gateway-log: could not restrict /run/s6/container_environment." >&2
+
+log_dir_ready() {
+    if [ ! -e "${LOG_DIR}" ] && [ ! -L "${LOG_DIR}" ]; then
+        # /dev/shm is writable by every user: the folder is created here,
+        # owned by root until chown, and used only if it is exactly the
+        # folder made here. An existing folder is never chowned.
+        mkdir -m 2750 "${LOG_DIR}" || return 1
+        chown -h audit-log:audit-relay "${LOG_DIR}" || return 1
+    fi
+    [ -d "${LOG_DIR}" ] && [ ! -L "${LOG_DIR}" ] || return 1
+    owner=$(stat -c '%U:%G:%a' "${LOG_DIR}") || return 1
+    [ "${owner}" = "audit-log:audit-relay:2750" ] || return 1
+    # Only audit-log can create files in the folder; the lock file is made
+    # as audit-log too, so that root follows no link there.
+    (umask 077 && exec s6-setuidgid audit-log touch "${LOG_DIR}/lock") &&
+        s6-setuidgid audit-log chmod 0600 "${LOG_DIR}/lock"
+}
+
+if [ -e "${USE_LOG_DIR}" ] && log_dir_ready; then
+    umask 027
+    exec s6-softlimit -a "${MEMORY_LIMIT}" \
+        s6-setuidgid audit-log s6-log -d 3 -l 0 -- 1 n2 s524288 "${LOG_DIR}"
+fi
+
+echo "twingate-gateway-log: cannot use ${LOG_DIR}; the audit log goes to the add-on log only, and the Web UI shows no new requests." >&2
+# Without the folder, the relay reports that the copy is not kept instead of
+# showing its last entries as current. Only a folder made by run is removed.
+owner=$(stat -c '%U' "${LOG_DIR}" 2>/dev/null) || owner=""
+if [ "${owner}" = "audit-log" ] && [ -d "${LOG_DIR}" ] && [ ! -L "${LOG_DIR}" ]; then
+    rm -rf -- "${LOG_DIR}"
+fi
+exec s6-softlimit -a "${MEMORY_LIMIT}" s6-setuidgid audit-log s6-log -d 3 -l 0 -- 1

@@ -81,15 +81,25 @@ frontend in a browser; keep browser access on an ordinary Twingate Resource
    Gateway address in step 3.
 5. Start the add-on.
 
-### Step 2: Copy the CA certificate from the log
+### Step 2: Copy the CA certificate from the Web UI
 
 On its first start the add-on creates a certificate authority (CA) and keeps
 it in the add-on's data folder. The Gateway uses this CA to sign the TLS
 certificates it presents to Twingate Clients. Twingate Clients trust the
 Gateway only after the CA certificate is registered in Twingate.
 
-The add-on prints the CA certificate on every start. Open the **Log** tab. It
-looks like this:
+1. On the add-on's **Info** tab, select **Open Web UI**.
+2. In the **Setup** section, select **Copy** next to the CA certificate and
+   paste it into a file named `ca.pem` on the machine where you will run
+   Terraform or `curl`.
+
+The same section shows the certificate's subject, SHA-256 fingerprint and
+expiry date, and the Gateway address you need in step 3. This is the public
+certificate only; the CA private key never leaves the add-on. If **Copy**
+does not work in your browser, select the certificate text and copy it.
+
+The add-on also prints the CA certificate on every start, so you can copy it
+from the **Log** tab instead. It looks like this:
 
 ```text
 [12:00:00] INFO: The Gateway signs its TLS certificates with this CA. Twingate Clients trust the Gateway only if this CA certificate is registered in Twingate as the X.509 certificate authority of the Gateway.
@@ -116,8 +126,8 @@ Use either option below. Both create three objects:
 
 1. **X.509 certificate authority**: the contents of `ca.pem`.
 2. **Gateway**: the address where the Connector reaches this add-on,
-   `<home-assistant-ip>:8443`, in the Remote Network of the Connector add-on,
-   using the CA from 1.
+   `<home-assistant-ip>:8443` (shown as **Gateway address** in the Web UI),
+   in the Remote Network of the Connector add-on, using the CA from 1.
 3. **Web App Resource** for the Home Assistant API, bound to the Gateway:
    - **Address**: `<home-assistant-ip>`. The Gateway sends requests to this
      address, so it must be reachable from the add-on container. Use the
@@ -388,8 +398,9 @@ Do not pass an `Authorization` header. The expected response is:
 ```
 
 Any other Home Assistant REST endpoint works the same way, for example
-`curl http://ha-api.int/api/states`. The add-on log records each request in
-the audit log.
+`curl http://ha-api.int/api/states`. Each request appears under
+**Recent requests** in the Web UI, and the audit log in the add-on log
+records it in full.
 
 ### Step 7: Connect an MCP client (optional)
 
@@ -423,6 +434,98 @@ the audit log.
 Other MCP clients that support the Streamable HTTP transport work the same
 way: point them at `http://ha-api.int/api/mcp` (or `/api/mcp/assist`) without
 authentication.
+
+## Web UI
+
+Select **Open Web UI** on the add-on's **Info** tab, or turn on
+**Show in sidebar** there to open it from the Home Assistant sidebar. The page
+is read-only and refreshes every 5 seconds. It shows:
+
+- **Setup**: the CA certificate with a **Copy** button, its subject, SHA-256
+  fingerprint and expiry, and the Gateway address to register in Twingate.
+  The add-on cannot see the host's LAN IP address, so the address reads
+  `<home-assistant-ip>:8443` unless you opened Home Assistant by IP address;
+  then it suggests that address. The port is the host port set in the
+  **Network** section.
+- **Status**: whether the Gateway answers its health check, the Gateway
+  version and whether a newer 2.x release is available (see
+  [Gateway updates](#gateway-updates)), the Twingate network, whether the
+  Twingate signing keys are working, the static certificate, the add-on
+  version and the Gateway's uptime.
+- **Configuration**: the names of the injected request headers (never their
+  values), the certificate IP addresses, the audit log setting, the log level
+  and whether the CA is your own.
+- **Traffic**: open connections, closed proxy connections (connections from
+  Twingate Clients; health checks and rejected connections are not
+  included), successful and failed authentications, connections rejected
+  before a request (any connection that never completed TLS and a request,
+  including port probes and TLS handshakes that fail because the CA is not
+  registered in Twingate), HTTP responses by status class, latency, and
+  requests to Home Assistant, from the Gateway's metrics. The counters start
+  at zero when the add-on starts.
+- **Recent requests**: the newest 100 requests with time, Twingate user,
+  method, path, status and duration.
+
+**Signing keys** is derived from what the add-on can observe: successful
+client authentications (the Gateway accepts a Twingate token only after
+verifying it with the signing keys), a check of the signing-key URL
+`https://<network>.twingate.com/api/v1/jwk/ec` that the Web UI makes shortly
+after the add-on starts and then every 15 minutes, or every 2 minutes while
+the check fails, and the network check at startup.
+
+What the Web UI never shows: request header values, the CA private key, the
+Supervisor token, or the headers recorded in the audit log. Paths in
+**Recent requests** are shown without their query string (marked `?…`),
+because query strings can carry secrets. For the same reason the webhook ID
+in `/api/webhook/<id>` paths is masked (`/api/webhook/***`): anyone who knows
+it can trigger the webhook. The Web UI keeps the recent requests in memory
+only.
+
+How it gets the audit log: with `audit_log: addon_log`, the Gateway writes
+its audit log to its standard output. `s6-log`, the logger of the add-on's
+service supervisor, copies every line unchanged to the add-on log and also
+keeps a small copy of the newest entries in memory
+(`/dev/shm/twingate-gateway-audit`, about 1.5 MiB; older entries are
+deleted). A small relay follows this copy and passes a summary without
+headers, query strings or webhook IDs to the Web UI. With
+`audit_log: file`, the relay reads `audit.log` instead.
+The Gateway does not wait for the relay or the Web UI: if they stop, hang,
+restart or cannot start, requests through the Gateway and the audit log are
+not affected, and only the **Recent requests** list may be out of date. The
+Web UI then shows a warning in that section when the relay has not reported
+for 15 seconds. When the relay starts again, it reads the newest entries of
+the copy, so requests made while it was down usually appear in the list.
+The same holds when the copy cannot be kept: if `/dev/shm` is full, new
+entries are missing from the copy, and `s6-log` keeps them in memory until
+it can write them; if the copy cannot be set up, `s6-log` copies the audit
+log to the add-on log only until the add-on restarts, and says so in the
+log. Either way requests and the add-on log are not affected, and the Web UI
+shows a warning under **Recent requests**.
+
+The memory of `s6-log` is limited to 64 MiB, enough for about 60 MB of
+entries waiting for a full `/dev/shm`, or for a single entry of about 18 MB.
+When `s6-log` needs more, it logs
+`s6-log: fatal: unable to stralloc_catb: Out of memory` and from then on
+copies the audit log to the add-on log only, until the add-on restarts; the
+Web UI then says that new requests are not shown. The entries `s6-log` had
+just read when it stopped (about 8 KB, usually fewer than 10 entries) are
+lost; all other entries are in the add-on log, and requests through the
+Gateway are not affected.
+
+Access: the Web UI is served through Home Assistant ingress only. Home
+Assistant signs the user in; by default only administrators see the sidebar
+entry. The Web UI has no port on the host and accepts connections only from
+the Supervisor's ingress proxy. It runs as the unprivileged user `nobody`,
+which cannot read the Gateway configuration, the Supervisor token,
+`audit.log`, the copy of the audit log or the private key of the CA the
+add-on creates. With your own CA, the permissions of your key file decide;
+see [`custom_ca_keyfile`](#options-custom_ca_certfile-and-custom_ca_keyfile).
+The relay runs as a second unprivileged user, `audit-relay`, which can read
+the copy of the audit log but none of the other files named above, and
+`s6-log` as a third, `audit-log`, which writes the copy. None of these users
+can stop or signal another's processes or the Gateway. With
+`audit_log: file`, the relay runs as root instead, because it needs root to
+read `audit.log`.
 
 ## Configuration
 
@@ -517,6 +620,9 @@ Twingate identity, the incoming request headers and the response status:
   `/config` inside the add-on). The file is rotated at 10 MiB and three
   compressed old files are kept.
 
+With either setting, the Web UI shows summaries of the newest 100 requests
+(see [Web UI](#web-ui)).
+
 ### Options: `custom_ca_certfile` and `custom_ca_keyfile`
 
 Use your own CA instead of the one the add-on creates. Set both options to
@@ -529,10 +635,15 @@ Requirements:
   that has not expired. If it has a key usage extension, it must allow
   certificate signing.
 - The private key is an unencrypted PEM key that belongs to the certificate.
+- Make the key file readable by its owner only (`chmod 600`). Unprivileged
+  processes in the add-on, such as the Web UI, can read a key file that is
+  readable by others. The add-on logs a warning at startup when the key is
+  readable by its group or by others, and starts anyway.
 
-The add-on then prints this certificate in the log instead of its own; that
-is the one to register in Twingate. The CA the add-on created stays in its
-data folder and is used again if you clear both options.
+The add-on then shows this certificate in the Web UI and prints it in the log
+instead of its own; that is the one to register in Twingate. The CA the
+add-on created stays in its data folder and is used again if you clear both
+options.
 
 Default: not set.
 
@@ -553,6 +664,65 @@ Twingate must use the host port configured here (default `8443`).
   [Troubleshooting](#clients-cannot-connect-after-the-ca-changed).
 - The CA is part of the add-on's data, so a backup of the add-on contains the
   CA private key, and restoring the backup restores the CA.
+
+## Gateway updates
+
+The add-on follows the newest Twingate Gateway 2.x release: it takes the
+Gateway from the image tag `twingate/gateway:2` on Docker Hub, which Twingate
+moves to each new 2.x release. The Gateway is taken when Home Assistant builds
+the add-on, that is when you install, update or rebuild it, and keeps that
+version until the next build. The log names it at every start
+(`Starting Twingate Gateway 2.1.0 on port 8443/tcp ...`), and the Web UI shows
+it under **Status**.
+
+To update the Gateway to the newest 2.x release, rebuild the add-on:
+
+1. Open **Settings** > **Apps** > **Twingate Gateway** (in older Home
+   Assistant versions, **Apps** are called **Add-ons**).
+2. On the **Info** tab, open the menu (⋮) of the **Controls** card and select
+   **Rebuild**.
+
+Or run `ha apps rebuild <slug>` in the Home Assistant command line
+(`ha addons rebuild <slug>` with older versions of the command line); the Web
+UI shows the command with this add-on's slug. Home Assistant builds the image
+again with the release that `twingate/gateway:2` points to at that moment and
+starts the add-on again if it was running. The configuration, the CA and the
+certificates it issued are kept, so nothing changes in Twingate. The Gateway
+accepts no connections until the rebuild is done.
+
+The Web UI checks for a newer release shortly after the add-on starts and then
+once a day. It reads Docker Hub's public list of the image's tags,
+`https://hub.docker.com/v2/namespaces/twingate/repositories/gateway/tags?page_size=100`
+(and at most two further pages of it), and finds the release that the tag `2`
+points to by comparing their platform images. A newer release counts only
+when `2` points to it: a final 2.x.y version, never one with a suffix such as
+`-dev` or another major version, and not a release that Twingate has published
+but `2` does not point to yet, because a rebuild would not install it. The
+request has a generic `User-Agent` and no add-on name, network name or other
+data about your installation; like any request, it shows Docker Hub your
+public IP address. It is not a pull and does not count against Docker Hub's
+pull rate limit.
+
+When a newer release is available, the Web UI shows a notice with the steps
+above at the top of the page, and the log says so after each start of the
+add-on and then at most once a day while it remains so:
+
+```text
+Web UI: Twingate Gateway 2.2.0 is available; this add-on runs Gateway 2.1.0. To update, rebuild the add-on: ...
+```
+
+Otherwise **Status** shows `Up to date (checked <time>)` next to the Gateway
+version. If the check fails, for example without internet access, it is tried
+again after 5, 15 and then every 60 minutes. The Web UI then shows when the
+last check succeeded, or that none has yet; nothing else changes. The version
+it compares is the one the Gateway reports in its audit log, or, until the
+first request, the version recorded when the add-on was built. The Web UI's
+status document (`api/status`) has the result under `gateway_update`
+(`running`, `latest`, `update_available`, `checked_at`).
+
+A new major version of the Gateway (3.x) is never installed by a rebuild. It
+comes with an update of the add-on, because its configuration, metrics or
+audit log may change.
 
 ## Security considerations
 
@@ -608,7 +778,11 @@ the request headers as sent by the client (unredacted) and the response status
 and headers. Headers the Gateway injects are not logged, so the Home Assistant
 token does not appear. Clients should not send credentials of their own.
 Anyone who can read the add-on log, or the `audit.log` file when
-`audit_log: file` is set, can read these entries.
+`audit_log: file` is set, can read these entries. The copy of the newest
+entries that the add-on keeps for the Web UI's relay with
+`audit_log: addon_log` is kept in memory and is readable only by root,
+`s6-log`'s user and the relay's user. The Web UI shows only a summary of
+each entry, without headers or query string and with webhook IDs masked.
 
 ### Network exposure
 
@@ -617,8 +791,15 @@ Anyone who can read the add-on log, or the `audit.log` file when
   without one is its `/healthz` health check, which returns an empty
   response.
 - The Gateway's only outbound connection is to `https://<network>.twingate.com`
-  to fetch Twingate's public signing keys. Audit logs stay on the Home
-  Assistant host.
+  to fetch Twingate's public signing keys; the Web UI checks the same address
+  every 15 minutes, or every 2 minutes while the check fails. Audit logs stay
+  on the Home Assistant host.
+- Once a day the Web UI reads the public list of image tags of the Gateway
+  from `https://hub.docker.com`, with nothing about your installation (see
+  [Gateway updates](#gateway-updates)).
+- The Web UI has no port on your LAN. It is reachable only through Home
+  Assistant ingress and accepts connections only from the Supervisor's
+  ingress proxy.
 - The add-on does not change direct access to Home Assistant on your LAN.
 - No reverse proxy or trusted proxy settings are needed in Home Assistant:
   the Gateway does not send an `X-Forwarded-For` header.
@@ -648,8 +829,9 @@ WARNING: Creating a new CA. Register the new CA certificate shown below in Twing
 
 or you reinstalled the add-on, Twingate still has the old CA and Twingate
 Clients reject the Gateway's certificate. The Gateway log then shows
-`failed to perform TLS handshake` errors. Copy the new certificate from the
-log into `ca.pem` and register it:
+`failed to perform TLS handshake` errors, and the Web UI counts them under
+**Rejected before a request**. Copy the new certificate from the Web UI (or
+from the log) into `ca.pem` and register it:
 
 - Terraform: replace `ca.pem` and run `terraform apply`. The provider replaces
   the CA when the certificate changes and points the Gateway at the new one.
