@@ -1,0 +1,12 @@
+#!/bin/sh
+# ==============================================================================
+# Twingate Connector add-on: the Connector, the add-on's main service.
+#
+# s6 connects standard output to the twingate-connector-log service (s6-log),
+# which copies every line unchanged to the add-on log. It is moved to file
+# descriptor 3, where /run.sh passes it to the Connector for its standard
+# output and standard error. The messages of /run.sh (option checks, package
+# installation) go to the add-on log directly, through standard error.
+# ==============================================================================
+exec 3>&1 1>&2
+exec /run.sh

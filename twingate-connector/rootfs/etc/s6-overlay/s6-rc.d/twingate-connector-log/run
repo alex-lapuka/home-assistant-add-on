@@ -1,0 +1,79 @@
+#!/bin/sh
+# ==============================================================================
+# Twingate Connector add-on: the Connector's log.
+#
+# Standard input is the Connector's standard output and standard error (see
+# the twingate-connector service); s6 keeps this pipe open while this service
+# restarts. s6-log copies every line unchanged (no timestamp added) to
+# standard output, the add-on log. It also keeps a copy, each line with a
+# TAI64N timestamp, in a small rotated folder in memory, LOG_DIR, which the
+# log relay (twingate-connector-relay) reads for the Web UI. No Python runs
+# in this path, so the relay and the Web UI can neither slow down nor stop
+# the Connector.
+#
+# s6-log runs as the unprivileged user twingate-log. The folder is readable
+# by the group twingate-relay (the relay) only, because with connection_logs
+# on its lines contain personal data. Its size is limited: current is rotated
+# at about 256 KiB and at most 768 KiB of rotated files are kept (3 files).
+# s6-log runs without -b: if the folder cannot be written (for example
+# because /dev/shm is full), the lines miss in the copy, while the add-on
+# log and the Connector continue. s6-log keeps the lines it could not write
+# in memory and retries every 2 seconds. Lines longer than 64 KiB are split
+# at 64 KiB (every byte is kept).
+#
+# s6-log never gives memory back, so its memory is limited: s6-softlimit -a
+# limits its address space, which covers all memory s6-log can allocate, on
+# any kernel (s6-log, a static program, takes less than 300 KiB of it
+# itself). With lines of at most 64 KiB, s6-log needs less than 1 MiB for
+# them, so 16 MiB leaves about 15 MB for lines waiting for the folder: 15
+# times what the folder keeps, which keeps only the newest lines anyway. When
+# s6-log needs more, it exits with 111, and finish makes s6-log copy to the
+# add-on log only (below). Lost are only the lines that s6-log had read but
+# not yet written to the add-on log: it writes them after each read from the
+# pipe (at most 8 KiB), so the lines of that read and the line it was
+# reading.
+#
+# If the folder cannot be used, or s6-log failed with it before (see finish),
+# s6-log copies the Connector's output to the add-on log only, with the same
+# limit, which it then reaches only if the add-on log stops taking lines.
+#
+# s6-log reports on file descriptor 3 (notification-fd) when it is ready. s6
+# then starts it again right after it exited instead of 1 second later,
+# unless it was ready for less than 1 second, so a failing s6-log starts at
+# most once a second. While no s6-log runs, the Connector's output waits in
+# the pipe (64 KiB); only when the pipe is full does the Connector wait.
+# ==============================================================================
+LOG_DIR=/dev/shm/twingate-connector-log
+# s6-rc copies this file into the service directory at every start of the
+# add-on; finish removes it when s6-log exited with an error. Removing a file
+# needs no free space, so this works even when the disk is full.
+USE_LOG_DIR=./data/use-log-dir
+# The limit of s6-log's address space, in bytes (16 MiB).
+MEMORY_LIMIT=16777216
+
+log_dir_ready() {
+    if [ ! -e "${LOG_DIR}" ] && [ ! -L "${LOG_DIR}" ]; then
+        # /dev/shm is writable by every user: the folder is created here,
+        # owned by root until chown, and used only if it is exactly the
+        # folder made here. An existing folder is never chowned.
+        mkdir -m 0750 "${LOG_DIR}" || return 1
+        chown -h twingate-log:twingate-relay "${LOG_DIR}" || return 1
+    fi
+    [ -d "${LOG_DIR}" ] && [ ! -L "${LOG_DIR}" ] || return 1
+    owner=$(stat -c '%U:%G:%a' "${LOG_DIR}") || return 1
+    [ "${owner}" = "twingate-log:twingate-relay:750" ]
+}
+
+if [ -e "${USE_LOG_DIR}" ] && log_dir_ready; then
+    exec s6-softlimit -a "${MEMORY_LIMIT}" \
+        s6-setuidgid twingate-log s6-log -d 3 -l 65536 -- 1 t n3 s262144 S786432 "${LOG_DIR}"
+fi
+
+echo "twingate-connector-log: cannot use ${LOG_DIR}; the Connector's log goes to the add-on log only, and the Web UI does not get it." >&2
+# Without the folder, the relay reports that it cannot read the copy instead
+# of showing its last lines as current. Only a folder made by run is removed.
+owner=$(stat -c '%U' "${LOG_DIR}" 2>/dev/null) || owner=""
+if [ "${owner}" = "twingate-log" ] && [ -d "${LOG_DIR}" ] && [ ! -L "${LOG_DIR}" ]; then
+    rm -rf -- "${LOG_DIR}"
+fi
+exec s6-softlimit -a "${MEMORY_LIMIT}" s6-setuidgid twingate-log s6-log -d 3 -l 65536 -- 1

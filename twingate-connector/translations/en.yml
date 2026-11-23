@@ -1,0 +1,31 @@
+configuration:
+  access_token:
+    name: Access token
+    description: >-
+      The Connector's access token, generated in the Twingate Admin Console
+      with the "Manual" Connector setup. It is never shown on the add-on's
+      Web UI.
+  refresh_token:
+    name: Refresh token
+    description: >-
+      The Connector's refresh token, generated together with the access
+      token. It is never shown on the add-on's Web UI.
+  network:
+    name: Twingate network
+    description: >-
+      Your Twingate network name, the first part of your Admin Console
+      address (for example acme for acme.twingate.com).
+  connector_log_level:
+    name: Log level
+    description: >-
+      How much the Connector writes to the add-on log: error (errors only),
+      warn (also warnings), info (also information, the default) or debug
+      (everything, very verbose).
+  connection_logs:
+    name: Connection logs
+    description: >-
+      Log every connection through this Connector and list recent ones on
+      the Web UI. Contains personal data: each user's email address, the
+      Resources they use, and their device's public IP address and
+      approximate location, written to the add-on log. May not be available
+      on every Twingate plan.

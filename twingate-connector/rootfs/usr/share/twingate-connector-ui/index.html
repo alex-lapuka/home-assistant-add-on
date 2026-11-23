@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- ingress-base -->
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>Twingate Connector</title>
+<link rel="stylesheet" href="twingate-docs-theme.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<header class="tg-header">
+  <div class="tg-header__inner">
+    <div class="tg-brand">
+      <img class="tg-brand__logo" src="icon.png" width="32" height="32" alt="">
+      <span class="tg-brand__name">Twingate Connector</span>
+      <span class="tg-header__divider" aria-hidden="true"></span>
+      <span class="tg-brand__product">Home Assistant add-on</span>
+    </div>
+    <div class="tg-header__meta" role="status" aria-live="polite">
+      <span id="live" class="tg-pill tg-pill--neutral">Loading</span>
+    </div>
+  </div>
+</header>
+
+<main class="tg-container tg-main">
+  <h1 class="tg-title">Connector status</h1>
+  <p class="tg-lead" id="lead">The Connector's own view. Twingate's view is in the Admin Console.</p>
+
+  <div id="notice"></div>
+  <div id="summary" class="tg-grid"></div>
+
+  <div class="tg-sections">
+    <details class="tg-details" data-section="connections">
+      <summary class="tg-details__summary">
+        <h2 class="tg-details__title">Recent connections</h2>
+        <span class="tg-details__badge"></span>
+        <span class="tg-details__digest">Loading…</span>
+      </summary>
+      <div class="tg-details__body">
+        <div id="connections"><p class="tg-empty">Loading…</p></div>
+        <p class="tg-showall" hidden><button type="button" class="tg-showall__button"></button></p>
+      </div>
+    </details>
+
+    <details class="tg-details" data-section="problems">
+      <summary class="tg-details__summary">
+        <h2 class="tg-details__title">Warnings and errors</h2>
+        <span class="tg-details__badge"></span>
+        <span class="tg-details__digest">Loading…</span>
+      </summary>
+      <div class="tg-details__body">
+        <div id="problems"><p class="tg-empty">Loading…</p></div>
+        <p class="tg-showall" hidden><button type="button" class="tg-showall__button"></button></p>
+      </div>
+    </details>
+
+    <details class="tg-details" data-section="traffic">
+      <summary class="tg-details__summary">
+        <h2 class="tg-details__title">Traffic</h2>
+        <span class="tg-details__badge"></span>
+        <span class="tg-details__digest">Loading…</span>
+      </summary>
+      <div class="tg-details__body">
+        <div id="traffic"><p class="tg-empty">Loading…</p></div>
+      </div>
+    </details>
+
+    <details class="tg-details" data-section="status">
+      <summary class="tg-details__summary">
+        <h2 class="tg-details__title">Status details</h2>
+        <span class="tg-details__badge"></span>
+        <span class="tg-details__digest">Loading…</span>
+      </summary>
+      <div class="tg-details__body">
+        <div id="status"><p class="tg-empty">Loading…</p></div>
+      </div>
+    </details>
+
+    <details class="tg-details" data-section="configuration">
+      <summary class="tg-details__summary">
+        <h2 class="tg-details__title">Configuration</h2>
+        <span class="tg-details__badge"></span>
+        <span class="tg-details__digest">Loading…</span>
+      </summary>
+      <div class="tg-details__body">
+        <div id="configuration"><p class="tg-empty">Loading…</p></div>
+      </div>
+    </details>
+  </div>
+
+  <footer class="tg-footer tg-section" id="footer">
+    <p>Read-only status page of the Twingate Connector add-on.</p>
+  </footer>
+</main>
+
+<noscript>
+  <div class="tg-container"><p class="tg-empty">This page needs JavaScript to show the Connector status.</p></div>
+</noscript>
+</body>
+</html>

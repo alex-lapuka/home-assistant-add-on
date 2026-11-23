@@ -1,0 +1,57 @@
+#!/bin/sh
+# ==============================================================================
+# Twingate Connector add-on: log relay for the Web UI.
+#
+# Reads the copy of the Connector's log that the twingate-connector-log
+# service (s6-log) keeps in /dev/shm/twingate-connector-log and sends
+# summaries of the Connector's state, warnings and connections to the Web
+# UI. The relay is not in the path of the Connector's log: when it stops,
+# hangs or cannot start, the Connector and the add-on log are not affected.
+#
+# Runs as the unprivileged user twingate-relay with an empty environment.
+# Only this user's group may read the log folder; the Web UI runs as another
+# user (twingate-ui), so it can neither read the folder nor signal or trace
+# the relay. The relay saves its position and the Connector's state (no
+# personal data) in STATE_DIR, so that a restarted relay continues where it
+# stopped.
+# ==============================================================================
+STATE_DIR=/dev/shm/twingate-connector-relay
+
+# s6-overlay keeps the container's environment, including SUPERVISOR_TOKEN,
+# in /run/s6/container_environment, and bashio caches the Supervisor's
+# answers, which include the add-on options with the Twingate tokens, in
+# /tmp/.bashio. Both are readable by every user by default; only root
+# services (/run.sh and the base image's start-up scripts) use them. This
+# runs before the relay starts.
+chmod 0700 /run/s6/container_environment ||
+    echo "Could not restrict /run/s6/container_environment." >&2
+install -d -m 0700 -o root -g root /tmp/.bashio ||
+    echo "Could not restrict /tmp/.bashio." >&2
+
+state_dir_ready() {
+    if [ ! -e "${STATE_DIR}" ] && [ ! -L "${STATE_DIR}" ]; then
+        # /dev/shm is writable by every user: an existing folder is used
+        # only if it is exactly the folder made here, and never chowned.
+        mkdir -m 0700 "${STATE_DIR}" || return 1
+        chown -h twingate-relay:twingate-relay "${STATE_DIR}" || return 1
+    fi
+    [ -d "${STATE_DIR}" ] && [ ! -L "${STATE_DIR}" ] || return 1
+    owner=$(stat -c '%U:%G:%a' "${STATE_DIR}") || return 1
+    [ "${owner}" = "twingate-relay:twingate-relay:700" ]
+}
+
+set --
+if ! state_dir_ready; then
+    echo "twingate-connector-relay: cannot use ${STATE_DIR}; a restarted relay starts at the end of the Connector's log." >&2
+    set -- --no-saved-state
+    # Without its saved position, only the first relay reads the log from
+    # its start; later ones skip what an earlier relay may have read.
+    if [ -e ./started ]; then
+        set -- "$@" --from-end
+    fi
+fi
+touch ./started
+
+exec s6-setuidgid twingate-relay \
+    env -i PATH=/usr/bin:/bin LANG=C.UTF-8 \
+    python3 -I /usr/lib/twingate-connector-ui/log_relay.py "$@"
