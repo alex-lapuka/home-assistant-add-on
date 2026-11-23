@@ -95,6 +95,10 @@ KEY_CHECK_INTERVAL = 30.0
 UNAUTHORIZED_BODY = b"401: Unauthorized"
 
 
+# Callers whose groups were logged; cleared when it reaches this size.
+CALLERS_SEEN_MAX = 1000
+
+
 def log(message: str) -> None:
     """One line to standard error, which ends up in the add-on log."""
     with contextlib.suppress(OSError, ValueError):
@@ -319,6 +323,7 @@ class Proxy:
         self.rules = config.rules
         self.token = token
         self.journal = journal
+        self._callers_seen: set[tuple[str, tuple[str, ...]]] = set()
         self.verifier = verifier
         self.session: aiohttp.ClientSession | None = None
         self.ws_session: aiohttp.ClientSession | None = None
@@ -406,6 +411,22 @@ class Proxy:
         except gat.TokenError as retry:
             return None, str(retry)
 
+    def _note_caller(self, identity: gat.Identity, label: str) -> None:
+        """Log a caller's Twingate groups once per caller and set of groups.
+
+        The groups decide the grants, and nothing else shows which groups a
+        token carries, for example the token of a service account.
+        """
+        key = (identity.username, identity.groups)
+        if key in self._callers_seen:
+            return
+        if len(self._callers_seen) >= CALLERS_SEEN_MAX:
+            self._callers_seen.clear()
+        self._callers_seen.add(key)
+        groups = ", ".join(_printable(group, 100) for group in identity.groups[:50]) or "(none)"
+        more = f" and {len(identity.groups) - 50} more" if len(identity.groups) > 50 else ""
+        log(f"caller {_printable(identity.username)} (Twingate user ID {_printable(identity.user_id, 100)}): Twingate groups in its token: {groups}{more}; grants here: {label}.")
+
     # -- entry point ---------------------------------------------------------
 
     async def handle(self, request):
@@ -421,6 +442,7 @@ class Proxy:
 
         grants = self.rules.grants(identity.groups)
         label = access_rules.grant_label(grants)
+        self._note_caller(identity, label)
         started = time.monotonic()
         if access_rules.cross_site_browser_request(request.headers.get("Origin"), request.headers.get("Sec-Fetch-Site"), request.headers.get("Host")):
             self._record(identity, label, request.method, shown_path, has_query, 403, started, "blocked", "from a web page of another site")
