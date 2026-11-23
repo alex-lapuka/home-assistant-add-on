@@ -30,9 +30,12 @@ RUN for user in twingate-log twingate-relay twingate-ui; do \
 # s6-overlay services: the Connector (twingate-connector, started by /run.sh),
 # s6-log for its output (twingate-connector-log), the log relay
 # (twingate-connector-relay) and the Web UI (twingate-connector-ui). The base
-# image's /init starts them; the add-on stops when the Connector exits.
+# image's /init starts them; the add-on stops when the Connector exits. The
+# Web UI shows the add-on's name and listens on its ingress_port, both from
+# config.yml.
 COPY rootfs /
 COPY icon.png /usr/share/twingate-connector-ui/icon.png
+COPY config.yml /usr/share/twingate-connector-ui/config.yml
 COPY run.sh /
 
 # The checks test the Web UI and the relay. Run as root, they compile the

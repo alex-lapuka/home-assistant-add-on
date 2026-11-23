@@ -1,12 +1,12 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-addon-name="{{addon_name}}" data-addon-slug="{{addon_slug}}">
 <head>
 <meta charset="utf-8">
 <!-- ingress-base -->
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
-<title>Twingate Connector</title>
+<title>{{addon_name}}</title>
 <link rel="stylesheet" href="twingate-docs-theme.css">
 <script src="app.js" defer></script>
 </head>
@@ -15,7 +15,7 @@
   <div class="tg-header__inner">
     <div class="tg-brand">
       <img class="tg-brand__logo" src="icon.png" width="32" height="32" alt="">
-      <span class="tg-brand__name">Twingate Connector</span>
+      <span class="tg-brand__name">{{addon_name}}</span>
       <span class="tg-header__divider" aria-hidden="true"></span>
       <span class="tg-brand__product">Home Assistant add-on</span>
     </div>
@@ -92,7 +92,7 @@
   </div>
 
   <footer class="tg-footer tg-section" id="footer">
-    <p>Read-only status page of the Twingate Connector add-on.</p>
+    <p>Read-only status page of the {{addon_name}} add-on.</p>
   </footer>
 </main>
 
