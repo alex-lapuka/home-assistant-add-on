@@ -1,0 +1,1181 @@
+/*
+ * Twingate documentation theme for Home Assistant add-on pages.
+ *
+ * A standalone stylesheet that gives a page the look of the Twingate
+ * documentation site (https://www.twingate.com/docs): white surfaces with
+ * light grey code blocks and callouts, near-black text, blue links, hairline
+ * borders and flat, borderless tables. It contains no add-on specific rules
+ * and loads nothing from the network: the documentation's own typefaces are
+ * replaced by system font stacks.
+ *
+ * Light colours are taken from the documentation's stylesheets. The
+ * documentation has no dark theme; the dark palette below is derived from its
+ * neutral greys (its darkest text colour becomes the page background) so that
+ * the page follows prefers-color-scheme inside a dark Home Assistant.
+ *
+ * Custom properties (all prefixed --tg-):
+ *
+ *   Surfaces and lines
+ *     --tg-color-bg             page background
+ *     --tg-color-bg-subtle      code blocks, callouts, inline code, tiles
+ *     --tg-color-bg-muted       hover background, secondary button
+ *     --tg-color-bg-emphasis    pressed or hovered secondary button
+ *     --tg-color-border         hairlines: header, table rows, card outlines
+ *     --tg-color-border-strong  table header rule, inline code outline
+ *     --tg-color-divider        vertical separators
+ *
+ *   Text
+ *     --tg-color-text           headings and primary text
+ *     --tg-color-text-body      running text in sections and tables
+ *     --tg-color-text-muted     secondary text, captions, labels
+ *     --tg-color-text-subtle    decorative text and icons only (low contrast)
+ *     --tg-color-code-text      text inside code blocks
+ *
+ *   Accents
+ *     --tg-color-link, --tg-color-link-hover, --tg-color-link-active
+ *     --tg-color-accent         focus ring
+ *     --tg-color-selection-bg, --tg-color-selection-text
+ *     --tg-color-inverse-bg, --tg-color-inverse-bg-hover, --tg-color-inverse-text
+ *                               primary button and code block copy button
+ *
+ *   Status (pills, callout icons, bars)
+ *     --tg-color-success, --tg-color-success-bg
+ *     --tg-color-warning, --tg-color-warning-bg, --tg-color-warning-border,
+ *       --tg-color-warning-fill (bars)
+ *     --tg-color-danger, --tg-color-danger-bg
+ *     --tg-color-info, --tg-color-info-bg
+ *     --tg-color-neutral, --tg-color-neutral-bg
+ *
+ *   Typography
+ *     --tg-font-sans, --tg-font-mono
+ *     --tg-font-size-xs (12px), -sm (14px), -nav (15px), -base (16px),
+ *       -lead (18px), -h3 (20px), -h2 (24px), -h1 (32px), -h1-wide (36px)
+ *     --tg-font-weight-regular (400), -medium (500), -semibold (600)
+ *     --tg-line-height-body (1.6), --tg-line-height-heading (1.2)
+ *     --tg-letter-spacing-heading
+ *
+ *   Spacing, shape and layout
+ *     --tg-space-1 (2px) ... --tg-space-10 (64px)
+ *     --tg-radius-sm (4px), -md (6px), -lg (8px), -pill (40px)
+ *     --tg-header-height, --tg-content-max-width, --tg-gutter
+ *
+ * Classes:
+ *   Layout    tg-header, tg-header__inner, tg-brand, tg-brand__logo,
+ *             tg-brand__name, tg-brand__product, tg-header__divider,
+ *             tg-header__meta, tg-container, tg-main, tg-footer
+ *   Headings  tg-title, tg-lead, tg-section, tg-h2, tg-h3, tg-eyebrow
+ *   Sections  tg-sections, tg-details, tg-details__summary, tg-details__title,
+ *             tg-details__badge, tg-details__digest, tg-details__body,
+ *             tg-showall, tg-showall__button (see "Collapsible sections")
+ *   Content   tg-grid, tg-grid--wide, tg-card, tg-card__label,
+ *             tg-card__value, tg-card__meta, tg-table-wrap, tg-table,
+ *             tg-table--kv, tg-table--stack, tg-table--compact, tg-num,
+ *             tg-code, tg-codeblock,
+ *             tg-codeblock__pre, tg-copy, tg-callout, tg-callout--info,
+ *             tg-callout--success, tg-callout--warning, tg-callout--danger,
+ *             tg-callout__icon, tg-callout__content, tg-callout__title,
+ *             tg-pill, tg-pill--success, tg-pill--warning, tg-pill--danger,
+ *             tg-pill--info, tg-pill--neutral, tg-bar, tg-bar__fill,
+ *             tg-bar__fill--success, tg-bar__fill--info, tg-bar__fill--warning,
+ *             tg-bar__fill--danger, tg-bar__fill--neutral, tg-btn,
+ *             tg-btn--primary, tg-btn--secondary, tg-list, tg-empty
+ *   Utilities tg-muted, tg-small, tg-mono, tg-nowrap, tg-break,
+ *             tg-visually-hidden
+ *
+ * A table with tg-table--stack shows each row as a block below 600px; give
+ * every cell a data-label attribute with its column name and wrap the cell's
+ * content in one element. tg-table--compact halves the row padding for long
+ * lists. Below 600px, tg-grid shows two columns and a code block's copy
+ * button moves above the block.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* Surfaces and lines (documentation stylesheets) */
+  --tg-color-bg: #ffffff;
+  --tg-color-bg-subtle: #f7f8f9;
+  --tg-color-bg-muted: #eff0f2;
+  --tg-color-bg-emphasis: #e0e1e4;
+  --tg-color-border: #eff0f2;
+  --tg-color-border-strong: #cfcfd3;
+  --tg-color-divider: rgba(0, 0, 0, 0.08);
+
+  /* Text */
+  --tg-color-text: #121315;
+  --tg-color-text-body: #3a3d40;
+  --tg-color-text-muted: #61626b;
+  --tg-color-text-subtle: #a1a1aa;
+  --tg-color-code-text: #383a42;
+
+  /* Accents */
+  --tg-color-link: #3957ff;
+  --tg-color-link-hover: #292dc1;
+  --tg-color-link-active: #1b1c8d;
+  --tg-color-accent: #3c41e9;
+  --tg-color-selection-bg: #fafe86;
+  --tg-color-selection-text: #121315;
+  --tg-color-inverse-bg: #121315;
+  --tg-color-inverse-bg-hover: #3a3d40;
+  --tg-color-inverse-text: #ffffff;
+
+  /* Status. Success is the documentation's code string green, warning its
+     highlight yellow, info its link blue; danger is derived. */
+  --tg-color-success: #007c5a;
+  --tg-color-success-bg: rgba(0, 124, 90, 0.1);
+  --tg-color-warning: #5c5a00;
+  --tg-color-warning-bg: #fafe86;
+  --tg-color-warning-border: #cdd149;
+  --tg-color-warning-fill: #cdd149;
+  --tg-color-danger: #c4242b;
+  --tg-color-danger-bg: rgba(196, 36, 43, 0.1);
+  --tg-color-info: #3957ff;
+  --tg-color-info-bg: rgba(57, 87, 255, 0.1);
+  --tg-color-neutral: #61626b;
+  --tg-color-neutral-bg: #eff0f2;
+
+  /* Typography. The documentation uses TT Hoves for headings and interface
+     text, Inter for body text and Basis Grotesque Mono for code; these stacks
+     use an installed copy of Inter when present, otherwise the system face. */
+  --tg-font-sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --tg-font-mono: ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Mono", "Segoe UI Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --tg-font-size-xs: 0.75rem;
+  --tg-font-size-sm: 0.875rem;
+  --tg-font-size-nav: 0.9375rem;
+  --tg-font-size-base: 1rem;
+  --tg-font-size-lead: 1.125rem;
+  --tg-font-size-h3: 1.25rem;
+  --tg-font-size-h2: 1.5rem;
+  --tg-font-size-h1: 2rem;
+  --tg-font-size-h1-wide: 2.25rem;
+  --tg-font-weight-regular: 400;
+  --tg-font-weight-medium: 500;
+  --tg-font-weight-semibold: 600;
+  --tg-line-height-body: 1.6;
+  --tg-line-height-heading: 1.2;
+  --tg-letter-spacing-heading: -0.003em;
+
+  /* Spacing, shape and layout */
+  --tg-space-1: 0.125rem;
+  --tg-space-2: 0.25rem;
+  --tg-space-3: 0.5rem;
+  --tg-space-4: 0.75rem;
+  --tg-space-5: 1rem;
+  --tg-space-6: 1.25rem;
+  --tg-space-7: 1.5rem;
+  --tg-space-8: 2rem;
+  --tg-space-9: 3rem;
+  --tg-space-10: 4rem;
+  --tg-radius-sm: 4px;
+  --tg-radius-md: 6px;
+  --tg-radius-lg: 8px;
+  --tg-radius-pill: 40px;
+  --tg-header-height: 4rem;
+  --tg-content-max-width: 72rem;
+  --tg-gutter: 1.25rem;
+}
+
+@media (min-width: 752px) {
+  :root {
+    --tg-gutter: 2.0625rem;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --tg-color-bg: #121315;
+    --tg-color-bg-subtle: #1d2023;
+    --tg-color-bg-muted: #26292d;
+    --tg-color-bg-emphasis: #3a3d40;
+    --tg-color-border: #2a2d31;
+    --tg-color-border-strong: #3a3d40;
+    --tg-color-divider: rgba(255, 255, 255, 0.1);
+
+    --tg-color-text: #f7f8f9;
+    --tg-color-text-body: #e0e1e4;
+    --tg-color-text-muted: #a1a1aa;
+    --tg-color-text-subtle: #61626b;
+    --tg-color-code-text: #e0e1e4;
+
+    --tg-color-link: #8c9cff;
+    --tg-color-link-hover: #b5c0ff;
+    --tg-color-link-active: #d6dcff;
+    --tg-color-accent: #8c9cff;
+    --tg-color-inverse-bg: #f7f8f9;
+    --tg-color-inverse-bg-hover: #e0e1e4;
+    --tg-color-inverse-text: #121315;
+
+    --tg-color-success: #4cc38a;
+    --tg-color-success-bg: rgba(76, 195, 138, 0.14);
+    --tg-color-warning: #fafe86;
+    --tg-color-warning-bg: rgba(250, 254, 134, 0.12);
+    --tg-color-warning-border: rgba(250, 254, 134, 0.35);
+    --tg-color-warning-fill: #e5e96e;
+    --tg-color-danger: #ff7b72;
+    --tg-color-danger-bg: rgba(255, 123, 114, 0.14);
+    --tg-color-info: #8c9cff;
+    --tg-color-info-bg: rgba(140, 156, 255, 0.14);
+    --tg-color-neutral: #a1a1aa;
+    --tg-color-neutral-bg: #26292d;
+  }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Base                                                                     */
+/* ------------------------------------------------------------------------ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--tg-color-bg);
+  color: var(--tg-color-text);
+  font-family: var(--tg-font-sans);
+  font-size: var(--tg-font-size-base);
+  font-weight: var(--tg-font-weight-regular);
+  line-height: var(--tg-line-height-body);
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  color: var(--tg-color-text);
+  font-weight: var(--tg-font-weight-medium);
+}
+
+p {
+  margin: 0;
+}
+
+p + p {
+  margin-top: var(--tg-space-5);
+}
+
+strong {
+  font-weight: var(--tg-font-weight-medium);
+}
+
+img {
+  max-width: 100%;
+  height: auto;
+  vertical-align: top;
+}
+
+a {
+  color: var(--tg-color-link);
+  cursor: pointer;
+  transition: color 0.3s;
+}
+
+a:hover {
+  color: var(--tg-color-link-hover);
+}
+
+a:active {
+  color: var(--tg-color-link-active);
+}
+
+::selection {
+  background-color: var(--tg-color-selection-bg);
+  color: var(--tg-color-selection-text);
+}
+
+:focus-visible {
+  outline: 2px solid var(--tg-color-accent);
+  outline-offset: 2px;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Layout                                                                   */
+/* ------------------------------------------------------------------------ */
+
+.tg-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background-color: var(--tg-color-bg);
+  border-bottom: 1px solid var(--tg-color-border);
+}
+
+.tg-header__inner {
+  display: flex;
+  align-items: center;
+  gap: var(--tg-space-4);
+  max-width: var(--tg-content-max-width);
+  min-height: var(--tg-header-height);
+  margin: 0 auto;
+  padding: var(--tg-space-3) var(--tg-gutter);
+}
+
+.tg-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--tg-space-3);
+  min-width: 0;
+  color: var(--tg-color-text);
+  text-decoration: none;
+}
+
+.tg-brand__logo {
+  flex: 0 0 auto;
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--tg-radius-md);
+  box-shadow: 0 0 0 1px var(--tg-color-divider);
+}
+
+.tg-brand__name {
+  font-size: var(--tg-font-size-nav);
+  font-weight: var(--tg-font-weight-medium);
+  line-height: var(--tg-line-height-heading);
+  white-space: nowrap;
+}
+
+.tg-header__divider {
+  flex: 0 0 auto;
+  width: 1px;
+  height: 1rem;
+  background-color: var(--tg-color-divider);
+}
+
+.tg-brand__product {
+  overflow: hidden;
+  color: var(--tg-color-text-muted);
+  font-size: var(--tg-font-size-nav);
+  line-height: var(--tg-line-height-heading);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tg-header__meta {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: var(--tg-space-3);
+  margin-left: auto;
+  color: var(--tg-color-text-muted);
+  font-size: var(--tg-font-size-sm);
+}
+
+.tg-container {
+  max-width: var(--tg-content-max-width);
+  margin: 0 auto;
+  padding: 0 var(--tg-gutter);
+}
+
+.tg-main {
+  padding-top: var(--tg-space-7);
+  padding-bottom: var(--tg-space-9);
+}
+
+@media (min-width: 752px) {
+  .tg-main {
+    padding-top: var(--tg-space-8);
+  }
+}
+
+.tg-footer {
+  padding: var(--tg-space-7) 0 var(--tg-space-8);
+  border-top: 1px solid var(--tg-color-border);
+  color: var(--tg-color-text-muted);
+  font-size: var(--tg-font-size-sm);
+}
+
+@media (max-width: 599px) {
+  .tg-header__divider,
+  .tg-brand__product {
+    display: none;
+  }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Headings                                                                 */
+/* ------------------------------------------------------------------------ */
+
+.tg-title {
+  font-size: var(--tg-font-size-h1);
+  font-weight: var(--tg-font-weight-medium);
+  letter-spacing: var(--tg-letter-spacing-heading);
+  line-height: var(--tg-line-height-heading);
+}
+
+@media (min-width: 752px) {
+  .tg-title {
+    font-size: var(--tg-font-size-h1-wide);
+  }
+}
+
+.tg-lead {
+  max-width: 41rem;
+  margin-top: var(--tg-space-5);
+  color: var(--tg-color-text-muted);
+  font-size: var(--tg-font-size-lead);
+  line-height: var(--tg-line-height-body);
+}
+
+.tg-section {
+  margin-top: var(--tg-space-9);
+}
+
+.tg-h2 {
+  font-size: var(--tg-font-size-h2);
+  font-weight: var(--tg-font-weight-medium);
+  letter-spacing: var(--tg-letter-spacing-heading);
+  line-height: 1.625rem;
+}
+
+.tg-h2 + * {
+  margin-top: var(--tg-space-3);
+}
+
+.tg-h3 {
+  margin-top: var(--tg-space-8);
+  font-size: var(--tg-font-size-h3);
+  font-weight: var(--tg-font-weight-medium);
+  letter-spacing: var(--tg-letter-spacing-heading);
+  line-height: var(--tg-line-height-heading);
+}
+
+.tg-h3 + * {
+  margin-top: var(--tg-space-3);
+}
+
+.tg-eyebrow {
+  color: var(--tg-color-text);
+  font-size: var(--tg-font-size-sm);
+  font-weight: var(--tg-font-weight-semibold);
+  line-height: var(--tg-line-height-body);
+}
+
+.tg-section > p,
+.tg-section > .tg-list {
+  max-width: 48rem;
+  color: var(--tg-color-text-body);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Collapsible sections                                                     */
+/* ------------------------------------------------------------------------ */
+
+/*
+ * Page sections that open and close, built on <details> and <summary> (they
+ * work with the keyboard and without script). The summary line names the
+ * section and carries an optional status badge and a one-line digest, so
+ * that a closed section still tells its essential fact:
+ *
+ *   <div class="tg-sections">
+ *     <details class="tg-details" data-section="NAME">
+ *       <summary class="tg-details__summary">
+ *         <h2 class="tg-details__title">Title</h2>
+ *         <span class="tg-details__badge"></span>
+ *         <span class="tg-details__digest">One-line digest</span>
+ *       </summary>
+ *       <div class="tg-details__body">
+ *         <div id="NAME">Content</div>
+ *         <p class="tg-showall" hidden>
+ *           <button type="button" class="tg-showall__button"></button>
+ *         </p>
+ *       </div>
+ *     </details>
+ *   </div>
+ *
+ * tg-sections stacks the sections between hairlines. The badge holds one
+ * tg-pill or nothing; empty, it takes no space. The chevron is drawn by the
+ * summary and turns when the section opens. Below 600px the digest wraps
+ * under the title and the body is not indented. tg-showall is optional: a
+ * text button below a shortened list ("Show all 87"), hidden while the list
+ * is short.
+ */
+
+.tg-sections {
+  margin-top: var(--tg-space-8);
+  border-bottom: 1px solid var(--tg-color-border);
+}
+
+.tg-details {
+  border-top: 1px solid var(--tg-color-border);
+}
+
+.tg-details__summary {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--tg-space-4);
+  row-gap: var(--tg-space-1);
+  padding: var(--tg-space-5) 0 var(--tg-space-5) var(--tg-space-8);
+  border-radius: var(--tg-radius-sm);
+  cursor: pointer;
+  list-style: none;
+}
+
+.tg-details__summary::-webkit-details-marker {
+  display: none;
+}
+
+.tg-details__summary::marker {
+  content: "";
+}
+
+.tg-details__summary::before {
+  content: "";
+  position: absolute;
+  top: calc(var(--tg-space-5) + 0.4375rem);
+  left: 0.4375rem;
+  width: 0.5625rem;
+  height: 0.5625rem;
+  border-right: 2px solid var(--tg-color-text-muted);
+  border-bottom: 2px solid var(--tg-color-text-muted);
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease-out;
+}
+
+.tg-details[open] > .tg-details__summary::before {
+  transform: rotate(45deg);
+}
+
+.tg-details__summary:hover::before {
+  border-color: var(--tg-color-text);
+}
+
+.tg-details__title {
+  margin: 0;
+  color: var(--tg-color-text);
+  font-size: var(--tg-font-size-h3);
+  font-weight: var(--tg-font-weight-medium);
+  letter-spacing: var(--tg-letter-spacing-heading);
+  line-height: 1.5rem;
+}
+
+.tg-details__badge:empty {
+  display: none;
+}
+
+.tg-details__digest {
+  flex: 1 1 14rem;
+  min-width: 0;
+  color: var(--tg-color-text-muted);
+  font-size: var(--tg-font-size-sm);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5rem;
+  overflow-wrap: anywhere;
+}
+
+.tg-details__body {
+  padding: 0 0 var(--tg-space-8) var(--tg-space-8);
+}
+
+.tg-details__body > :first-child > :first-child {
+  margin-top: 0;
+}
+
+.tg-showall {
+  margin: var(--tg-space-3) 0 0;
+}
+
+.tg-showall[hidden] {
+  display: none;
+}
+
+.tg-showall__button {
+  padding: var(--tg-space-2) 0;
+  border: 0;
+  background: none;
+  color: var(--tg-color-link);
+  font-family: var(--tg-font-sans);
+  font-size: var(--tg-font-size-sm);
+  font-weight: var(--tg-font-weight-medium);
+  line-height: var(--tg-line-height-body);
+  cursor: pointer;
+  transition: color 0.3s;
+}
+
+.tg-showall__button:hover {
+  color: var(--tg-color-link-hover);
+  text-decoration: underline;
+}
+
+@media (max-width: 599px) {
+  .tg-details__summary {
+    padding-left: var(--tg-space-7);
+  }
+
+  .tg-details__summary::before {
+    left: 0.25rem;
+  }
+
+  .tg-details__digest {
+    flex-basis: 100%;
+  }
+
+  .tg-details__body {
+    padding-left: 0;
+  }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Cards and grids                                                          */
+/* ------------------------------------------------------------------------ */
+
+.tg-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 13rem), 1fr));
+  gap: var(--tg-space-4);
+  margin-top: var(--tg-space-5);
+}
+
+.tg-grid--wide {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 1fr));
+}
+
+@media (min-width: 752px) {
+  .tg-grid {
+    gap: var(--tg-space-6);
+  }
+}
+
+@media (max-width: 599px) {
+  .tg-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--tg-space-3);
+  }
+
+  .tg-grid--wide {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.tg-card {
+  min-width: 0;
+  padding: var(--tg-space-5);
+  background-color: var(--tg-color-bg);
+  border-radius: var(--tg-radius-lg);
+  box-shadow: inset 0 0 0 1px var(--tg-color-border-strong);
+}
+
+.tg-card__label {
+  color: var(--tg-color-text-muted);
+  font-size: var(--tg-font-size-sm);
+  line-height: var(--tg-line-height-body);
+}
+
+.tg-card__value {
+  margin-top: var(--tg-space-2);
+  overflow-wrap: anywhere;
+  color: var(--tg-color-text);
+  font-size: var(--tg-font-size-h2);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--tg-font-weight-medium);
+  line-height: var(--tg-line-height-heading);
+}
+
+.tg-card__meta {
+  margin-top: var(--tg-space-2);
+  color: var(--tg-color-text-muted);
+  font-size: var(--tg-font-size-sm);
+  line-height: 1.4;
+}
+
+@media (max-width: 599px) {
+  .tg-card {
+    padding: var(--tg-space-4);
+  }
+
+  .tg-card__value {
+    font-size: var(--tg-font-size-h3);
+  }
+
+  .tg-card__meta {
+    font-size: var(--tg-font-size-xs);
+  }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Tables                                                                   */
+/* ------------------------------------------------------------------------ */
+
+.tg-table-wrap {
+  max-width: 100%;
+  margin: var(--tg-space-5) 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.tg-table {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--tg-color-text-body);
+  font-size: var(--tg-font-size-base);
+  line-height: var(--tg-line-height-body);
+}
+
+.tg-table-wrap > .tg-table {
+  margin: 0;
+}
+
+.tg-table th,
+.tg-table td {
+  padding: var(--tg-space-5) var(--tg-space-3);
+  text-align: left;
+  vertical-align: top;
+}
+
+.tg-table th:first-child,
+.tg-table td:first-child {
+  padding-left: 0;
+}
+
+.tg-table th:last-child,
+.tg-table td:last-child {
+  padding-right: 0;
+}
+
+.tg-table thead th {
+  border-bottom: 1px solid var(--tg-color-border-strong);
+  color: var(--tg-color-text);
+  font-weight: var(--tg-font-weight-semibold);
+  white-space: nowrap;
+}
+
+.tg-table tbody td,
+.tg-table tbody th {
+  border-bottom: 1px solid var(--tg-color-border);
+}
+
+.tg-table tbody td:first-child,
+.tg-table tbody th:first-child {
+  color: var(--tg-color-text);
+  font-weight: var(--tg-font-weight-medium);
+}
+
+.tg-table--kv tbody th {
+  width: 32%;
+  min-width: 9rem;
+  color: var(--tg-color-text);
+  font-weight: var(--tg-font-weight-medium);
+}
+
+.tg-table--kv td > * + * {
+  margin-top: var(--tg-space-2);
+}
+
+.tg-table--compact th,
+.tg-table--compact td {
+  padding-top: var(--tg-space-3);
+  padding-bottom: var(--tg-space-3);
+}
+
+.tg-num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.tg-table th.tg-num,
+.tg-table td.tg-num {
+  text-align: right;
+}
+
+.tg-table .tg-bar {
+  margin-top: 0.625rem;
+}
+
+@media (max-width: 599px) {
+  .tg-table th,
+  .tg-table td {
+    padding-top: var(--tg-space-4);
+    padding-bottom: var(--tg-space-4);
+  }
+
+  .tg-table--kv tbody tr,
+  .tg-table--kv tbody th,
+  .tg-table--kv tbody td {
+    display: block;
+    width: auto;
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  .tg-table--kv tbody th {
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+
+  .tg-table--kv tbody td {
+    padding-top: var(--tg-space-1);
+  }
+
+  .tg-table--stack thead {
+    display: none;
+  }
+
+  .tg-table--stack tbody tr {
+    display: grid;
+    grid-template-columns: minmax(6.5rem, auto) 1fr;
+    column-gap: var(--tg-space-4);
+    padding: var(--tg-space-4) 0;
+    border-bottom: 1px solid var(--tg-color-border);
+  }
+
+  .tg-table.tg-table--stack tbody td,
+  .tg-table.tg-table--stack tbody td:first-child,
+  .tg-table.tg-table--stack tbody td:last-child {
+    display: contents;
+    padding: 0;
+    border: 0;
+    font-weight: var(--tg-font-weight-regular);
+    text-align: left;
+  }
+
+  .tg-table--stack .tg-bar {
+    margin-top: 0.5625rem;
+  }
+
+  .tg-table--stack tbody td::before {
+    content: attr(data-label);
+    color: var(--tg-color-text-muted);
+    font-size: var(--tg-font-size-sm);
+    line-height: 1.75;
+  }
+
+  .tg-table--stack tbody td > * {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Code                                                                     */
+/* ------------------------------------------------------------------------ */
+
+.tg-code {
+  padding: 2px 5px;
+  background-color: var(--tg-color-bg-subtle);
+  border-radius: var(--tg-radius-sm);
+  box-shadow: inset 0 0 0 1px var(--tg-color-border-strong);
+  color: var(--tg-color-text);
+  font-family: var(--tg-font-mono);
+  font-size: var(--tg-font-size-sm);
+  font-weight: var(--tg-font-weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.tg-codeblock {
+  position: relative;
+  margin: var(--tg-space-7) 0;
+}
+
+.tg-codeblock__pre {
+  margin: 0;
+  padding: var(--tg-space-5);
+  overflow-x: auto;
+  background-color: var(--tg-color-bg-subtle);
+  border-radius: var(--tg-radius-lg);
+  box-shadow: inset 0 0 0 1px var(--tg-color-border);
+  color: var(--tg-color-code-text);
+  font-family: var(--tg-font-mono);
+  font-size: var(--tg-font-size-sm);
+  font-weight: var(--tg-font-weight-medium);
+  line-height: var(--tg-line-height-body);
+  white-space: pre;
+}
+
+.tg-copy {
+  position: absolute;
+  top: 0.6875rem;
+  right: 0.6875rem;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tg-space-2);
+  height: 2rem;
+  padding: 0 var(--tg-space-3);
+  border: 0;
+  border-radius: var(--tg-radius-sm);
+  background-color: var(--tg-color-inverse-bg);
+  color: var(--tg-color-inverse-text);
+  font-family: var(--tg-font-sans);
+  font-size: var(--tg-font-size-sm);
+  cursor: pointer;
+  transition: background-color 0.1s ease-out;
+}
+
+.tg-copy:hover {
+  background-color: var(--tg-color-inverse-bg-hover);
+}
+
+/* On narrow screens the copy button sits above the block instead of
+   covering the first lines. */
+@media (max-width: 599px) {
+  .tg-codeblock {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: var(--tg-space-3);
+  }
+
+  .tg-codeblock__pre {
+    align-self: stretch;
+  }
+
+  .tg-copy {
+    position: static;
+  }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Callouts                                                                 */
+/* ------------------------------------------------------------------------ */
+
+.tg-callout {
+  display: flex;
+  gap: var(--tg-space-4);
+  margin: var(--tg-space-5) 0;
+  padding: var(--tg-space-4);
+  background-color: var(--tg-color-bg-subtle);
+  border-radius: var(--tg-radius-lg);
+  box-shadow: inset 0 0 0 1px var(--tg-color-border);
+  color: var(--tg-color-text-body);
+  font-size: var(--tg-font-size-sm);
+}
+
+.tg-callout__icon {
+  flex: 0 0 auto;
+  width: 1.5rem;
+  height: 1.5rem;
+  color: var(--tg-color-neutral);
+}
+
+.tg-callout--info .tg-callout__icon {
+  color: var(--tg-color-info);
+}
+
+.tg-callout--success .tg-callout__icon {
+  color: var(--tg-color-success);
+}
+
+.tg-callout--warning .tg-callout__icon {
+  color: var(--tg-color-warning);
+}
+
+.tg-callout--danger .tg-callout__icon {
+  color: var(--tg-color-danger);
+}
+
+.tg-callout__content {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.tg-callout__title {
+  color: var(--tg-color-text);
+  font-size: var(--tg-font-size-sm);
+  font-weight: var(--tg-font-weight-semibold);
+}
+
+.tg-callout__content > * + * {
+  margin-top: var(--tg-space-2);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Pills, bars and buttons                                                  */
+/* ------------------------------------------------------------------------ */
+
+.tg-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.0625rem 0.625rem;
+  border-radius: var(--tg-radius-pill);
+  background-color: var(--tg-color-neutral-bg);
+  color: var(--tg-color-neutral);
+  font-size: var(--tg-font-size-sm);
+  font-weight: var(--tg-font-weight-medium);
+  line-height: 1.5rem;
+  white-space: nowrap;
+}
+
+.tg-pill::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background-color: currentColor;
+}
+
+.tg-pill--success {
+  background-color: var(--tg-color-success-bg);
+  color: var(--tg-color-success);
+}
+
+.tg-pill--warning {
+  background-color: var(--tg-color-warning-bg);
+  box-shadow: inset 0 0 0 1px var(--tg-color-warning-border);
+  color: var(--tg-color-warning);
+}
+
+.tg-pill--danger {
+  background-color: var(--tg-color-danger-bg);
+  color: var(--tg-color-danger);
+}
+
+.tg-pill--info {
+  background-color: var(--tg-color-info-bg);
+  color: var(--tg-color-info);
+}
+
+.tg-pill--neutral {
+  background-color: var(--tg-color-neutral-bg);
+  color: var(--tg-color-neutral);
+}
+
+.tg-bar {
+  display: block;
+  width: 100%;
+  min-width: 4rem;
+  height: 0.375rem;
+  overflow: hidden;
+  border-radius: var(--tg-radius-pill);
+  background-color: var(--tg-color-bg-muted);
+}
+
+.tg-bar__fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: var(--tg-radius-pill);
+  background-color: var(--tg-color-neutral);
+}
+
+.tg-bar__fill--success {
+  background-color: var(--tg-color-success);
+}
+
+.tg-bar__fill--info {
+  background-color: var(--tg-color-info);
+}
+
+.tg-bar__fill--warning {
+  background-color: var(--tg-color-warning-fill);
+}
+
+.tg-bar__fill--danger {
+  background-color: var(--tg-color-danger);
+}
+
+.tg-bar__fill--neutral {
+  background-color: var(--tg-color-neutral);
+}
+
+.tg-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.5rem;
+  padding: 0 var(--tg-space-5);
+  border: 0;
+  border-radius: var(--tg-radius-pill);
+  background-color: var(--tg-color-bg-muted);
+  color: var(--tg-color-text);
+  font-family: var(--tg-font-sans);
+  font-size: var(--tg-font-size-nav);
+  font-weight: var(--tg-font-weight-medium);
+  line-height: 1.8;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color 200ms cubic-bezier(0.4, 0, 0.2, 1), color 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.tg-btn:hover {
+  background-color: var(--tg-color-bg-emphasis);
+  color: var(--tg-color-text);
+}
+
+.tg-btn--primary {
+  background-color: var(--tg-color-inverse-bg);
+  color: var(--tg-color-inverse-text);
+}
+
+.tg-btn--primary:hover {
+  background-color: var(--tg-color-inverse-bg-hover);
+  color: var(--tg-color-inverse-text);
+}
+
+.tg-btn--secondary {
+  background-color: var(--tg-color-bg-muted);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Lists, empty states and utilities                                        */
+/* ------------------------------------------------------------------------ */
+
+.tg-list {
+  margin: var(--tg-space-3) 0 var(--tg-space-5);
+  padding-left: var(--tg-space-7);
+  color: var(--tg-color-text-body);
+}
+
+.tg-list > li + li {
+  margin-top: var(--tg-space-2);
+}
+
+.tg-empty {
+  padding: var(--tg-space-7) 0;
+  color: var(--tg-color-text-muted);
+  font-size: var(--tg-font-size-sm);
+}
+
+.tg-muted {
+  color: var(--tg-color-text-muted);
+}
+
+.tg-small {
+  font-size: var(--tg-font-size-sm);
+}
+
+.tg-mono {
+  font-family: var(--tg-font-mono);
+  font-size: 0.9em;
+}
+
+.tg-nowrap {
+  white-space: nowrap;
+}
+
+.tg-break {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.tg-visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+  }
+}

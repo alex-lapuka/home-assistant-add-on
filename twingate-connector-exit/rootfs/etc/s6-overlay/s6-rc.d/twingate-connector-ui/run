@@ -1,0 +1,30 @@
+#!/bin/sh
+# ==============================================================================
+# Twingate Connector add-on: Web UI, served through Home Assistant ingress.
+#
+# Runs as the unprivileged user twingate-ui with an empty environment, so it
+# can read neither the tokens in the Connector's environment nor the add-on
+# options. It cannot read the Connector's log folder, and it cannot signal or
+# trace the log relay, which runs as twingate-relay. It listens on
+# ingress_port from the add-on's config.yml, which the image contains (see
+# the Dockerfile). s6 restarts the Web UI when it exits; the Connector is not
+# affected.
+# ==============================================================================
+
+# s6-overlay keeps the container's environment, including SUPERVISOR_TOKEN,
+# in /run/s6/container_environment, and bashio caches the Supervisor's
+# answers, which include the add-on options with the Twingate tokens, in
+# /tmp/.bashio. Both are readable by every user by default; only root
+# services (/run.sh and the base image's start-up scripts) use them. This
+# runs before the Web UI starts, which does not start without it.
+chmod 0700 /run/s6/container_environment || exit 1
+install -d -m 0700 -o root -g root /tmp/.bashio || exit 1
+
+# The folder of the relay's socket. Its group is the relay's, and new files
+# in it (the socket) get that group, so that only the relay may send to the
+# Web UI.
+install -d -m 2710 -o twingate-ui -g twingate-relay /run/twingate-connector-ui || exit 1
+
+exec s6-setuidgid twingate-ui \
+    env -i PATH=/usr/bin:/bin LANG=C.UTF-8 \
+    python3 -I /usr/lib/twingate-connector-ui/connector_ui.py

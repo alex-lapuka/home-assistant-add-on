@@ -1,6 +1,6 @@
 name: "Twingate Connector"
 description: "Connector for Twingate"
-version: "1.1.0"
+version: "1.2.0"
 slug: "twingate-connector"
 init: false
 arch:
@@ -12,11 +12,14 @@ options:
   refresh_token: ""
   network: ""
   connector_log_level: "info"
+  connection_logs: false
 schema:
   access_token: str
   refresh_token: str
   network: str
-  connector_log_level: list(info|debug)
+  connector_log_level: list(debug|info|warn|error)
+  connection_logs: bool
 ingress: true
-image: "ghcr.io/twingate-community/{arch}-twingate-connector"
+ingress_port: 8101
+panel_icon: mdi:lan-connect
 codenotary: "andrewb@twingate.com"
