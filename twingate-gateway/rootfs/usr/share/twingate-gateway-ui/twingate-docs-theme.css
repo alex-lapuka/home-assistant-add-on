@@ -64,6 +64,9 @@
  *             tg-brand__name, tg-brand__product, tg-header__divider,
  *             tg-header__meta, tg-container, tg-main, tg-footer
  *   Headings  tg-title, tg-lead, tg-section, tg-h2, tg-h3, tg-eyebrow
+ *   Sections  tg-sections, tg-details, tg-details__summary, tg-details__title,
+ *             tg-details__badge, tg-details__digest, tg-details__body,
+ *             tg-showall, tg-showall__button (see "Collapsible sections")
  *   Content   tg-grid, tg-grid--wide, tg-card, tg-card__label,
  *             tg-card__value, tg-card__meta, tg-table-wrap, tg-table,
  *             tg-table--kv, tg-table--stack, tg-table--compact, tg-num,
@@ -461,6 +464,166 @@ a:active {
 .tg-section > .tg-list {
   max-width: 48rem;
   color: var(--tg-color-text-body);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Collapsible sections                                                     */
+/* ------------------------------------------------------------------------ */
+
+/*
+ * Page sections that open and close, built on <details> and <summary> (they
+ * work with the keyboard and without script). The summary line names the
+ * section and carries an optional status badge and a one-line digest, so
+ * that a closed section still tells its essential fact:
+ *
+ *   <div class="tg-sections">
+ *     <details class="tg-details" data-section="NAME">
+ *       <summary class="tg-details__summary">
+ *         <h2 class="tg-details__title">Title</h2>
+ *         <span class="tg-details__badge"></span>
+ *         <span class="tg-details__digest">One-line digest</span>
+ *       </summary>
+ *       <div class="tg-details__body">
+ *         <div id="NAME">Content</div>
+ *         <p class="tg-showall" hidden>
+ *           <button type="button" class="tg-showall__button"></button>
+ *         </p>
+ *       </div>
+ *     </details>
+ *   </div>
+ *
+ * tg-sections stacks the sections between hairlines. The badge holds one
+ * tg-pill or nothing; empty, it takes no space. The chevron is drawn by the
+ * summary and turns when the section opens. Below 600px the digest wraps
+ * under the title and the body is not indented. tg-showall is optional: a
+ * text button below a shortened list ("Show all 87"), hidden while the list
+ * is short.
+ */
+
+.tg-sections {
+  margin-top: var(--tg-space-8);
+  border-bottom: 1px solid var(--tg-color-border);
+}
+
+.tg-details {
+  border-top: 1px solid var(--tg-color-border);
+}
+
+.tg-details__summary {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--tg-space-4);
+  row-gap: var(--tg-space-1);
+  padding: var(--tg-space-5) 0 var(--tg-space-5) var(--tg-space-8);
+  border-radius: var(--tg-radius-sm);
+  cursor: pointer;
+  list-style: none;
+}
+
+.tg-details__summary::-webkit-details-marker {
+  display: none;
+}
+
+.tg-details__summary::marker {
+  content: "";
+}
+
+.tg-details__summary::before {
+  content: "";
+  position: absolute;
+  top: calc(var(--tg-space-5) + 0.4375rem);
+  left: 0.4375rem;
+  width: 0.5625rem;
+  height: 0.5625rem;
+  border-right: 2px solid var(--tg-color-text-muted);
+  border-bottom: 2px solid var(--tg-color-text-muted);
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease-out;
+}
+
+.tg-details[open] > .tg-details__summary::before {
+  transform: rotate(45deg);
+}
+
+.tg-details__summary:hover::before {
+  border-color: var(--tg-color-text);
+}
+
+.tg-details__title {
+  margin: 0;
+  color: var(--tg-color-text);
+  font-size: var(--tg-font-size-h3);
+  font-weight: var(--tg-font-weight-medium);
+  letter-spacing: var(--tg-letter-spacing-heading);
+  line-height: 1.5rem;
+}
+
+.tg-details__badge:empty {
+  display: none;
+}
+
+.tg-details__digest {
+  flex: 1 1 14rem;
+  min-width: 0;
+  color: var(--tg-color-text-muted);
+  font-size: var(--tg-font-size-sm);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5rem;
+  overflow-wrap: anywhere;
+}
+
+.tg-details__body {
+  padding: 0 0 var(--tg-space-8) var(--tg-space-8);
+}
+
+.tg-details__body > :first-child > :first-child {
+  margin-top: 0;
+}
+
+.tg-showall {
+  margin: var(--tg-space-3) 0 0;
+}
+
+.tg-showall[hidden] {
+  display: none;
+}
+
+.tg-showall__button {
+  padding: var(--tg-space-2) 0;
+  border: 0;
+  background: none;
+  color: var(--tg-color-link);
+  font-family: var(--tg-font-sans);
+  font-size: var(--tg-font-size-sm);
+  font-weight: var(--tg-font-weight-medium);
+  line-height: var(--tg-line-height-body);
+  cursor: pointer;
+  transition: color 0.3s;
+}
+
+.tg-showall__button:hover {
+  color: var(--tg-color-link-hover);
+  text-decoration: underline;
+}
+
+@media (max-width: 599px) {
+  .tg-details__summary {
+    padding-left: var(--tg-space-7);
+  }
+
+  .tg-details__summary::before {
+    left: 0.25rem;
+  }
+
+  .tg-details__digest {
+    flex-basis: 100%;
+  }
+
+  .tg-details__body {
+    padding-left: 0;
+  }
 }
 
 /* ------------------------------------------------------------------------ */

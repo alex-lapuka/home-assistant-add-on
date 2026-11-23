@@ -1,0 +1,44 @@
+#!/bin/sh
+# ==============================================================================
+# Twingate Gateway add-on: the Home Assistant API proxy.
+#
+# The Gateway forwards requests for a Web App Resource that points at this
+# add-on (its host name, or the host's IP address and the published port) to
+# the proxy on port 8124. The proxy verifies the caller's Twingate token,
+# applies the access level of the add-on options (the same for every
+# caller) and passes allowed requests to Home Assistant through the
+# Supervisor, with the add-on's Supervisor token. It waits until /run.sh
+# has written its configuration (/run/twingate-gateway-proxy/config.json).
+#
+# It runs as its own unprivileged user, api-proxy, with an empty
+# environment. It is the only process besides root that gets the Supervisor
+# token: this script reads it as root and passes it on file descriptor 3,
+# from a here-document, so that it is in no file, no environment and no
+# command line the other users could read. The Web UI's user (nobody), the
+# relay's (audit-relay) and s6-log's (audit-log) cannot read the proxy's
+# memory or environment, and the proxy cannot read theirs. s6 restarts the
+# proxy when it exits; the Gateway, s6-log, the relay and the Web UI do not
+# depend on it.
+# ==============================================================================
+set -e
+
+# s6-overlay keeps the container environment, including the Supervisor
+# token, in this directory for with-contenv, readable by every user. Only
+# root needs it, so close it before anything runs as another user (the
+# other services do the same).
+chmod 0700 /run/s6/container_environment
+
+token=""
+if [ -r /run/s6/container_environment/SUPERVISOR_TOKEN ]; then
+    # A shell variable, not exported: it reaches the proxy only through the
+    # here-document below.
+    token=$(cat /run/s6/container_environment/SUPERVISOR_TOKEN)
+else
+    echo "Proxy: the add-on has no Supervisor token; the Home Assistant API proxy cannot reach Home Assistant." >&2
+fi
+
+exec s6-setuidgid api-proxy \
+    env -i PATH=/usr/bin:/bin LANG=C.UTF-8 \
+    python3 -I /usr/lib/twingate-gateway-proxy/supervisor_proxy.py --port 8124 --token-fd 3 3<<EOF
+${token}
+EOF

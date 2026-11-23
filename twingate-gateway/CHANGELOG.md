@@ -58,3 +58,62 @@
   the Gateway exits, with its exit code.
 - The add-on's own startup messages and the CA certificate are written to
   standard error instead of standard output; the **Log** tab shows both.
+
+## 0.3.0
+
+- Add a Home Assistant API proxy: point the Twingate Web App Resource at the
+  add-on's own address (shown in the Web UI and the log) and upstream port
+  `8124`, and the add-on reaches Home Assistant through the Supervisor with
+  its own Supervisor token. No long-lived token is created or stored. It
+  covers REST, MCP (`/api/mcp`, including streamed responses) and the
+  WebSocket API, which clients use with any non-empty placeholder token.
+  The add-on now asks for Home Assistant API access (`homeassistant_api`).
+- The Gateway adds the client's Twingate token to every Web App request
+  (`X-Twingate-Gateway-Token`); the proxy verifies it (signature with the
+  network's signing keys, issuer, audience, expiry, and that it was issued
+  for this Resource) and takes the caller's username from it. Requests
+  without a valid token get `401`.
+- New options `allow_read` (on by default), `allow_mcp` and `allow_write`
+  (off by default), shown as the toggles **Allow reading**, **Allow MCP**
+  and **Allow changes (write)**, set one access level for everyone who has
+  access to the Resource in Twingate: reads over REST and WebSocket (an
+  allow-list, without templates), the MCP endpoint `/api/mcp` (what it can
+  do is set in Home Assistant's MCP Server settings, by default any action
+  on any entity), and everything not always blocked, which includes reading
+  and MCP. Direct routes into the Supervisor and the host, account and
+  token management, backups, the Supervisor integration's MCP tools and MCP
+  `call_action` calls for `hassio` and `backup` actions are blocked for
+  everyone; with write they remain reachable indirectly. A request outside
+  the access level gets `403` with the name of the toggle that would allow
+  it; with all three off, every request does. The add-on logs the access
+  level at start, and warns when all three are off. Requests that browsers
+  mark as coming from a web page of another site are refused, so that a
+  website opened on an authorised device cannot use the API or the
+  WebSocket.
+- The proxy logs every request and WebSocket command with the Twingate
+  username, the access level and the decision, and the Web UI shows the
+  proxy's state, the access level and the newest proxied requests.
+- The Web UI shows a summary at the top and the details in sections that
+  open and close, each summed up in one line in its header; a section with
+  an error or a warning opens by itself, the browser remembers which
+  sections you opened, long lists show the newest 10 entries with a
+  "Show all" button, and the setup steps are shown until the first Twingate
+  client connects.
+- The Web UI's Setup section, its next steps and the startup log give the
+  Gateway address with the add-on's host name
+  (`<host name>.local.hass.io:8443`), which the Twingate Connector add-on on
+  the same Home Assistant resolves; the host's LAN IP address remains the
+  alternative for a Connector elsewhere.
+- The proxy runs as its own unprivileged user (`api-proxy`), the only
+  process besides root with the Supervisor token; s6 restarts it when it
+  stops, and the Gateway, its logger and the Web UI do not depend on it.
+  It keeps at most 16 WebSocket connections and 16 requests in progress per
+  Twingate user (64 of each in all).
+- New network port `8124/tcp`, not published by default; publish it only
+  for a Resource that uses the host's IP address.
+- `request_headers` keeps working for a Resource on Home Assistant's own
+  port; nothing needs to change in an existing setup. One difference: the
+  Gateway now also sends the caller's Twingate token
+  (`X-Twingate-Gateway-Token`) to every Web App upstream on this Gateway,
+  including Home Assistant on port 8123, which ignores it. The name
+  `X-Twingate-Gateway-Token` is reserved.

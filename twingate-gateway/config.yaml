@@ -1,6 +1,6 @@
 name: "Twingate Gateway"
 description: "Gateway for Twingate"
-version: "0.2.0"
+version: "0.3.0"
 slug: "twingate-gateway"
 arch:
   - aarch64
@@ -10,10 +10,13 @@ stage: experimental
 ingress: true
 ingress_port: 8100
 panel_icon: mdi:shield-lock-outline
+homeassistant_api: true
 ports:
   8443/tcp: 8443
+  8124/tcp: null
 ports_description:
   8443/tcp: "Gateway TLS listener that the Twingate Connector forwards Web App connections to"
+  8124/tcp: "Home Assistant API proxy, only if the Twingate Resource uses the host's IP address (not needed with the add-on's host name)"
 map:
   - type: ssl
     read_only: true
@@ -21,12 +24,21 @@ map:
     read_only: false
 options:
   log_level: info
+  # The API proxy's access level, the same for every caller that Twingate
+  # lets through to its Resource: reading, MCP, and changes (write), which
+  # includes the other two. All off: every API request is refused.
+  allow_read: true
+  allow_mcp: false
+  allow_write: false
   request_headers: []
   certificate_ip_addresses: []
   audit_log: addon_log
 schema:
   network: str
   log_level: list(debug|info|warn|error)
+  allow_read: bool
+  allow_mcp: bool
+  allow_write: bool
   request_headers:
     - name: str
       value: password

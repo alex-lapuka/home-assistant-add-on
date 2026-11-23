@@ -93,6 +93,11 @@ def parse_time(value: object) -> float | None:
             return None
 
 
+def printable(value: str) -> str:
+    """Replaces control, format (such as bidi overrides) and line-separator characters with "?"."""
+    return "".join(char if char.isprintable() else "?" for char in value)
+
+
 def mask_path(path: str) -> str:
     """Masks the webhook ID in a path such as /api/webhook/<id>.
 
@@ -135,14 +140,14 @@ def summarize(line: bytes) -> dict | None:
             has_query = bool(parts.query or parts.fragment)
         except ValueError:
             path = ""
-    path = mask_path(path)
+    path = printable(mask_path(path))
     truncated = len(path) > MAX_PATH_CHARS
     path = path[:MAX_PATH_CHARS]
 
     user = entry.get("user")
     username = ""
     if isinstance(user, dict) and isinstance(user.get("username"), str):
-        username = user["username"][:MAX_USER_CHARS]
+        username = printable(user["username"][:MAX_USER_CHARS])
 
     method = entry.get("method")
     if not isinstance(method, str) or not _METHOD.fullmatch(method):
@@ -526,6 +531,10 @@ def self_check() -> int:
     states = check_copy_state()
     if states != ["ok", "not kept", "not kept", "not kept"]:
         print(f"self check failed: copy states {states}", file=sys.stderr)
+        return 1
+    odd = summarize(line.replace(b'"username":"user@example.com"', b'"username":"a\\u202eb\\u2028c\\u0085d"').replace(b"/api/states?", b"/api/x\\u202ey?"))
+    if odd is None or odd["user"] != "a?b?c?d" or odd["path"] != "/api/x?y":
+        print(f"self check failed: characters not replaced: {odd}", file=sys.stderr)
         return 1
     print("audit_relay: ok")
     return 0

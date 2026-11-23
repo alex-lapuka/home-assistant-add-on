@@ -4,9 +4,14 @@
 # Twingate Gateway add-on
 #
 # Validates the add-on options, prepares the CA that the Gateway signs its
-# on-demand TLS certificates with, renders the Gateway configuration and starts
-# the Gateway. Request header values can hold secrets: they are never logged,
-# and the status file for the Web UI holds header names only.
+# on-demand TLS certificates with, renders the Gateway configuration, writes
+# the configuration of the Home Assistant API proxy and starts the Gateway.
+# Request header values can hold secrets: they are never logged, and the
+# status file for the Web UI holds header names only.
+#
+# The Gateway adds the client connection's Twingate token to every request
+# it forwards (X-Twingate-Gateway-Token: {{jwt}}). The API proxy (the
+# twingate-gateway-proxy service) verifies it to identify the caller.
 #
 # Runs as the s6 service twingate-gateway, which passes the pipe to s6-log
 # (the twingate-gateway-log service) on file descriptor 3.
@@ -37,6 +42,15 @@ readonly AUDIT_LOG_FILE="/config/audit.log"
 readonly STATUS_DIR="/run/twingate-gateway"
 readonly STATUS_FILE="${STATUS_DIR}/status.json"
 readonly RELAY_SERVICE="/run/service/twingate-gateway-relay"
+# The Home Assistant API proxy: its port in the container, the header that
+# carries the Twingate token, and its configuration, readable by the proxy's
+# user only (and root).
+readonly PROXY_PORT=8124
+readonly PROXY_USER="api-proxy"
+readonly PROXY_CONFIG_DIR="/run/twingate-gateway-proxy"
+readonly PROXY_CONFIG_FILE="${PROXY_CONFIG_DIR}/config.json"
+readonly TOKEN_HEADER="X-Twingate-Gateway-Token"
+readonly SUPERVISOR_DNS_SUFFIX="local.hass.io"
 
 # Set by the functions below.
 GATEWAY_VERSION=""
@@ -45,6 +59,11 @@ NETWORK_CHECK="unreachable"
 NETWORK_CHECK_STATUS=""
 GATEWAY_LOG_LEVEL=""
 HEADERS_JSON="{}"
+ACCESS_JSON='{"read":false,"mcp":false,"write":false}'
+PROXY_HOSTNAMES_JSON="[]"
+PROXY_HOSTNAME=""
+PROXY_HOST_PORT=""
+PROXY_HOST_PORT_STATE="unknown"
 STATIC_IPS=""
 AUDIT_LOG="addon_log"
 AUDIT_PIPE=false
@@ -76,6 +95,8 @@ def entry_title($i):
       "\($title): 'name' is required"
     elif (valid_name | not) then
       "\($title): 'name' must be a valid HTTP header name (letters, digits and !#$%&'*+-.^_`|~ only, no spaces or colons)"
+    elif (.name | ascii_downcase) == "x-twingate-gateway-token" then
+      "\($title): the add-on sets X-Twingate-Gateway-Token itself, for its Home Assistant API proxy; use another name"
     elif (.value | type) != "string" or (.value | test("\\S") | not) then
       "\($title): 'value' is required"
     elif (.value | test("^[ -~\t]*$") | not) then
@@ -87,6 +108,16 @@ def entry_title($i):
   | group_by(.name | ascii_downcase)[]
   | select(length > 1)
   | "request_headers: header '\(.[0].name)' is set more than once (header names are case-insensitive)")
+JQ
+
+# jq program over ACCESS_JSON that prints the access level of the Home
+# Assistant API proxy in words, or nothing when all three toggles are off.
+read -r -d '' JQ_ACCESS_LEVEL <<'JQ' || true
+if .write then
+  "write (everything that is not always blocked, including read and MCP)"
+else
+  [(if .read then "read" else empty end), (if .mcp then "MCP" else empty end)] | join(", ")
+end
 JQ
 
 # Reads the version of the Gateway binary, recorded when the image was built,
@@ -162,6 +193,121 @@ read_request_headers() {
     fi
 
     HEADERS_JSON=$(printf '%s' "${raw}" | jq --compact-output --slurp 'map({(.name): .value}) | add // {}')
+}
+
+# Reads the toggles 'allow_read', 'allow_mcp' and 'allow_write' of the Home
+# Assistant API proxy into ACCESS_JSON ({"read": ..., "mcp": ..., "write":
+# ...}). They set one access level for every caller whose Twingate token the
+# proxy verifies; who that is, is decided in Twingate, by who has access to
+# the Resource. Write includes read and MCP. A toggle is on only when it is
+# the JSON value true: a missing or null one counts as off, and any other
+# value (even the text "true") stops the add-on. The options come from the
+# Supervisor, which drops options that no longer exist, such as the group
+# lists of development versions of 0.3.0, so they are never read.
+read_api_access() {
+    local options problem
+
+    options=$(bashio::app.config) || bashio::exit.nok "Could not read the add-on options."
+    if [[ -z "${options}" ]]; then
+        options="{}"
+    fi
+    problem=$(jq --raw-output '
+        first(("allow_read", "allow_mcp", "allow_write") as $option
+          | select(.[$option] != null and (.[$option] | type) != "boolean")
+          | "Option '\''\($option)'\'' must be true or false.") // empty' <<<"${options}")
+    if [[ -n "${problem}" ]]; then
+        bashio::exit.nok "${problem}"
+    fi
+    ACCESS_JSON=$(jq --compact-output '{read: (.allow_read == true), mcp: (.allow_mcp == true), write: (.allow_write == true)}' <<<"${options}")
+}
+
+# Finds out how the Gateway reaches the proxy: the add-on's host name on the
+# Supervisor's network (PROXY_HOSTNAME, and PROXY_HOSTNAMES_JSON with the
+# .local.hass.io form) and the host port that PROXY_PORT is published on, if
+# any (PROXY_HOST_PORT, PROXY_HOST_PORT_STATE: mapped, not_mapped or unknown).
+# A failed Supervisor request is not fatal: the container's own host name,
+# which the Supervisor sets to the add-on's host name, is used instead, and
+# the host port is treated as not published.
+read_proxy_network() {
+    local supervisor_name container_name candidate port
+    local -a names=()
+
+    supervisor_name=$(bashio::app.hostname 2>/dev/null) || supervisor_name=""
+    container_name=$(cat /proc/sys/kernel/hostname 2>/dev/null) || container_name=""
+    for candidate in "${supervisor_name}" "${container_name}"; do
+        candidate="${candidate,,}"
+        if [[ "${candidate}" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; then
+            names+=("${candidate}" "${candidate}.${SUPERVISOR_DNS_SUFFIX}")
+            if [[ -z "${PROXY_HOSTNAME}" ]]; then
+                PROXY_HOSTNAME="${candidate}"
+            fi
+        fi
+    done
+    if ((${#names[@]} > 0)); then
+        PROXY_HOSTNAMES_JSON=$(printf '%s\n' "${names[@]}" | jq --raw-input --slurp --compact-output 'split("\n") | map(select(. != "")) | unique')
+    else
+        bashio::log.warning "Could not find out the add-on's host name; the Home Assistant API proxy accepts only Resources that use the host's IP address and a published port."
+    fi
+
+    if port=$(bashio::app.port "${PROXY_PORT}/tcp" 2>/dev/null); then
+        if [[ "${port}" =~ ^[0-9]+$ ]] && ((port > 0 && port < 65536)); then
+            PROXY_HOST_PORT="${port}"
+            PROXY_HOST_PORT_STATE="mapped"
+        else
+            PROXY_HOST_PORT_STATE="not_mapped"
+        fi
+    fi
+}
+
+# Writes the configuration of the Home Assistant API proxy: the network, the
+# access toggles and how the Gateway reaches the proxy. The proxy waits for
+# this file at its start. It is readable by the proxy's group only; it holds
+# no secret. The Web UI is not essential, but the proxy is: a failure here is
+# reported, and the Gateway starts anyway for the request_headers setup.
+write_proxy_config() {
+    local tmp
+
+    if ! install -d -m 0750 -o root -g "${PROXY_USER}" "${PROXY_CONFIG_DIR}" ||
+        ! tmp=$(mktemp "${PROXY_CONFIG_DIR}/.config.XXXXXX"); then
+        return 1
+    fi
+    if ! jq --null-input --ascii-output \
+        --arg network "${NETWORK}" \
+        --argjson port "${PROXY_PORT}" \
+        --arg host_port "${PROXY_HOST_PORT}" \
+        --argjson hostnames "${PROXY_HOSTNAMES_JSON}" \
+        --argjson access "${ACCESS_JSON}" \
+        '{
+            network: $network,
+            port: $port,
+            host_port: (if $host_port == "" then null else ($host_port | tonumber) end),
+            hostnames: $hostnames,
+            access: $access
+          }' >"${tmp}" ||
+        ! chgrp "${PROXY_USER}" "${tmp}" ||
+        ! chmod 0640 "${tmp}" ||
+        ! mv -f "${tmp}" "${PROXY_CONFIG_FILE}"; then
+        rm -f "${tmp}"
+        return 1
+    fi
+}
+
+# Logs where the Twingate Resource must point for the Home Assistant API
+# proxy to accept its callers, and the access level, the same for all of
+# them. With all three toggles off, it warns: every request is refused then.
+log_api_access() {
+    local level
+
+    bashio::log.info "Home Assistant API proxy on port ${PROXY_PORT}/tcp. Point a Web App Resource at ${PROXY_HOSTNAME:-<add-on host name>}.${SUPERVISOR_DNS_SUFFIX} with upstream port ${PROXY_PORT} to use it without a Home Assistant token."
+    if [[ "${PROXY_HOST_PORT_STATE}" == "mapped" ]]; then
+        bashio::log.info "The proxy is also published on host port ${PROXY_HOST_PORT}: a Resource with the Home Assistant host's IP address and upstream port ${PROXY_HOST_PORT} works too."
+    fi
+    level=$(jq --raw-output "${JQ_ACCESS_LEVEL}" <<<"${ACCESS_JSON}")
+    if [[ -n "${level}" ]]; then
+        bashio::log.info "API access for every caller of the Resource: ${level}."
+    else
+        bashio::log.warning "API access for every caller of the Resource: none. 'Allow reading', 'Allow MCP' and 'Allow changes (write)' are all off, so the Home Assistant API proxy answers 403 Forbidden to every request."
+    fi
 }
 
 # Reads 'certificate_ip_addresses' into STATIC_IPS, a sorted, comma-separated
@@ -578,6 +724,9 @@ print_ca() {
 # header values reach jq on stdin, not on its command line. --ascii-output
 # keeps the file 7-bit clean. With audit_log addon_log, the audit log goes to
 # the Gateway's standard output, which s6-log copies to the add-on log.
+# Besides the configured headers, the Gateway adds the client connection's
+# Twingate token as TOKEN_HEADER, for the Home Assistant API proxy; the
+# options cannot set that name (see JQ_HEADER_PROBLEMS).
 render_config() {
     local tmp
 
@@ -598,7 +747,8 @@ render_config() {
         --arg audit_log "${AUDIT_LOG}" \
         --arg audit_file "${AUDIT_LOG_FILE}" \
         --arg audit_pipe "${AUDIT_PIPE}" \
-        '. as $headers
+        --arg token_header "${TOKEN_HEADER}" \
+        '(. + {($token_header): "{{jwt}}"}) as $headers
         | {
             twingate: {network: $network},
             port: $port,
@@ -624,7 +774,7 @@ render_config() {
               end)
               + {automation: {issuer: {local: {certificateFile: $ca_cert, privateKeyFile: $ca_key}}}}
             ),
-            webApp: (if ($headers | length) > 0 then {requestHeaders: $headers} else {} end)
+            webApp: {requestHeaders: $headers}
           }' >"${tmp}"
 
     chmod 0600 "${tmp}"
@@ -715,6 +865,13 @@ write_status() {
         --arg ca_not_after "${ca_not_after#notAfter=}" \
         --arg ca_fingerprint "${ca_fingerprint#*=}" \
         --arg ca_pem "${ca_pem}" \
+        --argjson proxy_port "${PROXY_PORT}" \
+        --arg proxy_host_port "${PROXY_HOST_PORT}" \
+        --arg proxy_host_port_state "${PROXY_HOST_PORT_STATE}" \
+        --arg proxy_hostname "${PROXY_HOSTNAME}" \
+        --arg proxy_dns_suffix "${SUPERVISOR_DNS_SUFFIX}" \
+        --arg token_header "${TOKEN_HEADER}" \
+        --argjson access "${ACCESS_JSON}" \
         '{
             schema: 1,
             addon_version: $addon_version,
@@ -740,7 +897,16 @@ write_status() {
               fingerprint_sha256: $ca_fingerprint,
               pem: ($ca_pem + "\n")
             },
-            static_certificate: (if $static_ips == "" then null else {not_after: $static_not_after} end)
+            static_certificate: (if $static_ips == "" then null else {not_after: $static_not_after} end),
+            proxy: {
+              port: $proxy_port,
+              host_port: (if $proxy_host_port == "" then null else ($proxy_host_port | tonumber) end),
+              host_port_state: $proxy_host_port_state,
+              hostname: (if $proxy_hostname == "" then null else $proxy_hostname end),
+              dns_name: (if $proxy_hostname == "" then null else ($proxy_hostname + "." + $proxy_dns_suffix) end),
+              token_header: $token_header,
+              access: $access
+            }
           }' >"${tmp}" ||
         ! chmod 0644 "${tmp}" ||
         ! mv -f "${tmp}" "${STATUS_FILE}"; then
@@ -755,20 +921,28 @@ write_status() {
 main() {
     local header_names
 
-    # The Web UI shows the Gateway as starting until write_status runs.
-    rm -f "${STATUS_FILE}"
+    # The Web UI shows the Gateway as starting until write_status runs, and
+    # the proxy waits for its configuration.
+    rm -f "${STATUS_FILE}" "${PROXY_CONFIG_FILE}"
 
     read_gateway_version
     read_network
     read_log_level
     read_request_headers
+    read_api_access
     read_certificate_ip_addresses
     read_audit_log
+    read_proxy_network
     check_network
     prepare_ca
     prepare_static_certificate
     print_ca
     render_config
+    # write_proxy_config reports every failure through its return value.
+    # shellcheck disable=SC2310
+    if ! write_proxy_config; then
+        bashio::log.warning "Could not write the configuration of the Home Assistant API proxy; it does not start. The Gateway starts anyway."
+    fi
     # write_status reports every failure through its return value.
     # shellcheck disable=SC2310
     if ! write_status; then
@@ -782,13 +956,18 @@ main() {
     fi
 
     bashio::log.info "Twingate network: ${NETWORK}"
+    # The Connector add-on on this Home Assistant resolves the add-on's host
+    # name; a Connector elsewhere needs the host's LAN IP address and host port.
+    bashio::log.info "Gateway address for Twingate: ${PROXY_HOSTNAME:-<add-on host name>}.${SUPERVISOR_DNS_SUFFIX}:${GATEWAY_PORT} when the Twingate Connector add-on runs on this Home Assistant; for a Connector elsewhere, the host's LAN IP address with the host port of ${GATEWAY_PORT}/tcp."
+    log_api_access
     header_names=$(jq --raw-output 'keys | join(", ")' <<<"${HEADERS_JSON}")
     if [[ -n "${header_names}" ]]; then
         bashio::log.info "Request headers injected into Web App requests: ${header_names} (values are not logged)."
         bashio::log.warning "These headers are sent to EVERY Web App Resource that uses this Gateway. Assign only the intended Resource (the Home Assistant API) to this Gateway."
     else
-        bashio::log.info "No request headers configured; requests are proxied without injected headers."
+        bashio::log.info "No request headers configured in request_headers."
     fi
+    bashio::log.info "The Gateway also adds ${TOKEN_HEADER}, the client's Twingate token, to every Web App request, so that the Home Assistant API proxy can identify the caller."
     if [[ "${AUDIT_LOG}" == "file" ]]; then
         bashio::log.info "Audit log: ${AUDIT_LOG_FILE} in the add-on configuration folder."
     else

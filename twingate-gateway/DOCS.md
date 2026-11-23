@@ -4,13 +4,40 @@ This add-on lets scripts and AI agents use the Home Assistant API through
 Twingate without ever holding a Home Assistant credential.
 
 It runs the [Twingate Gateway](https://github.com/Twingate/gateway) in Web App
-mode. The Gateway adds an `Authorization: Bearer <long-lived-token>` header to
-every request it forwards to Home Assistant, so the client never sees the
-token. This covers the REST API (`/api/...`) and the Model Context Protocol
-endpoint (`/api/mcp`). Who may use the API is decided in Twingate, per user,
-group or service account, and access is revoked there.
+mode, and next to it a small proxy for the Home Assistant API. Who may use the
+API is decided in Twingate, per user, group or service account: everyone who
+has access to the Resource. What they may do is set with three toggles in
+this add-on's options, and is the same for all of them:
 
-The add-on is experimental.
+- **Allow reading** (on by default): read states, registries, history and
+  more, over REST and the WebSocket API, without changing anything.
+- **Allow MCP**: use the Model Context Protocol endpoint `/api/mcp`. What an
+  MCP client can do there is set in Home Assistant's MCP Server settings;
+  with their defaults it can perform any action on any entity.
+- **Allow changes (write)**: use the whole API, reading and MCP included,
+  except routes into the Supervisor and the host, account and token
+  management and backups, which are blocked for everyone.
+
+The proxy reaches Home Assistant through the Supervisor with the token that
+Home Assistant gives this add-on when it starts. You create no Home Assistant
+token, and none is stored in the add-on options or in backups. It covers the
+REST API (`/api/...`), MCP (`/api/mcp`) and the WebSocket API
+(`/api/websocket`).
+
+The earlier setup, in which the Gateway adds a long-lived access token to
+every request, keeps working; see
+[Alternative: a long-lived token in a request header](#alternative-a-long-lived-token-in-a-request-header)
+and
+[Switching from the request header setup to the proxy](#switching-from-the-request-header-setup-to-the-proxy).
+
+The add-on is experimental. The setup in this guide, with the Twingate
+Connector add-on on the same Home Assistant, has been tried on Home Assistant
+OS on a Raspberry Pi 4 (aarch64) with Home Assistant 2026.11: REST requests
+through the proxy with reading allowed, and a request refused because MCP
+was not allowed. That was a development version which set the access per
+Twingate group, with the same defaults. Not yet tried on a real
+installation: the three toggles as they are now, the WebSocket API, an MCP
+client, write access, and updating from 0.2.0 to 0.3.0 in place.
 
 ## How it works
 
@@ -20,14 +47,26 @@ The add-on is experimental.
 2. The Twingate Client on that machine tunnels the request to the Twingate
    Connector add-on.
 3. The Connector sees that the Resource uses a Gateway and forwards the
-   connection to this add-on at `<home-assistant-ip>:8443`.
+   connection to this add-on at the Gateway address: the add-on's host name
+   on Home Assistant's internal network and port 8443, for example
+   `a0d7b954-twingate-gateway.local.hass.io:8443`.
 4. The Twingate Client opens a TLS connection to the Gateway and presents a
    Twingate access token for the user or service account. The Gateway checks
    the token against Twingate's public signing keys.
-5. The Gateway forwards the request to the Resource address and upstream port
-   (for example `<home-assistant-ip>:8123`), adds the headers configured in
-   this add-on, and writes an audit log entry with the Twingate identity.
-6. Home Assistant authenticates the request with the injected token.
+5. The Gateway forwards the request to the Resource address and upstream
+   port, which point at the proxy in this add-on, writes an audit log entry
+   with the Twingate identity, and adds the connection's Twingate token as
+   the header `X-Twingate-Gateway-Token`.
+6. The proxy verifies that token itself (signature, network, expiry, and
+   that it was issued for this Resource), takes the caller's Twingate
+   username from it, and applies the access level set in the add-on's
+   options, which is the same for every caller.
+7. An allowed request goes to Home Assistant through the Supervisor
+   (`http://supervisor/core/api/...`, `ws://supervisor/core/websocket`),
+   authenticated with the add-on's Supervisor token. Home Assistant runs it
+   as its built-in **Supervisor** user, an administrator.
+8. The proxy logs the request with the Twingate username and its decision
+   in the add-on log, and shows it in the Web UI.
 
 Use this add-on for programmatic access: scripts, automations running
 elsewhere, and MCP clients. Do not use it for opening the Home Assistant
@@ -38,17 +77,21 @@ frontend in a browser; keep browser access on an ordinary Twingate Resource
 
 - Home Assistant OS, or another installation type with the Supervisor
   (add-ons need the Supervisor).
-- The Twingate Connector add-on from this repository, installed, running and
-  shown as online in the Twingate Admin Console. Note the Remote Network it
-  belongs to: the Gateway and the Resource go into the same Remote Network.
+- The Twingate Connector add-on from this repository, on the same Home
+  Assistant, installed, running and shown as online in the Twingate Admin
+  Console. Note the Remote Network it belongs to: the Gateway and the
+  Resource go into the same Remote Network. For a Connector on another
+  machine, the Gateway address is different; see
+  [Using the host's IP address instead](#using-the-hosts-ip-address-instead).
 - Administrator access to your Twingate network. The Gateway is part of
   Twingate's Identity Firewall (Privileged Access) features; check
   [Twingate's documentation](https://www.twingate.com/docs/identity-firewall)
   for availability on your plan.
 - A current Twingate Client and Connector. Twingate does not document a
   minimum version for Web App Resources.
-- A fixed LAN IP address for the Home Assistant host (a DHCP reservation or a
-  static address). Both the Gateway address and the Resource address use it.
+- Only for a Connector on another machine: a fixed LAN IP address for the
+  Home Assistant host (a DHCP reservation or a static address). The Gateway
+  address then uses it.
 - One of the following, to create the Twingate objects in step 3:
   - [Terraform](https://developer.hashicorp.com/terraform/install) 1.11 or
     later with the [Twingate provider](https://registry.terraform.io/providers/Twingate/twingate/latest/docs)
@@ -66,6 +109,10 @@ frontend in a browser; keep browser access on an ordinary Twingate Resource
 - For MCP clients: Home Assistant 2025.11 or later, which serves the
   Model Context Protocol endpoint at `/api/mcp`.
 
+The add-on asks for access to the Home Assistant API (`homeassistant_api`
+in its configuration); the Supervisor grants it when the add-on is installed
+or updated.
+
 ## Setup
 
 ### Step 1: Install and configure the add-on
@@ -75,31 +122,49 @@ frontend in a browser; keep browser access on an ordinary Twingate Resource
 2. On the **Configuration** tab, set `network` to your Twingate network name:
    the `<network>` part of `https://<network>.twingate.com`. This is the same
    value you entered in the Connector add-on.
-3. Leave the other options at their defaults for now.
-4. In the **Network** section, container port `8443/tcp` is published on host
-   port `8443`. Keep it. If you change the host port, use that port in the
-   Gateway address in step 3.
-5. Start the add-on.
+3. Choose what callers may do, with the three toggles (see
+   [API access](#api-access)): **Allow reading** is on, **Allow MCP** and
+   **Allow changes (write)** are off. For an MCP client, such as an AI
+   agent, turn on **Allow MCP**. The toggles apply to everyone you give
+   access to the Resource in Twingate (step 4). You can change them later;
+   the add-on applies them at its next start.
+4. Leave the other options at their defaults.
+5. In the **Network** section, container port `8443/tcp` is published on host
+   port `8443`. Keep it. A Gateway address with the add-on's host name uses
+   port `8443` in any case; if you change the host port, use it in a Gateway
+   address with the host's IP address. Leave `8124/tcp` (the API proxy)
+   empty.
+6. Start the add-on.
 
-### Step 2: Copy the CA certificate from the Web UI
+### Step 2: Copy the CA certificate and the add-on's host name from the Web UI
 
 On its first start the add-on creates a certificate authority (CA) and keeps
 it in the add-on's data folder. The Gateway uses this CA to sign the TLS
 certificates it presents to Twingate Clients. Twingate Clients trust the
 Gateway only after the CA certificate is registered in Twingate.
 
-1. On the add-on's **Info** tab, select **Open Web UI**.
-2. In the **Setup** section, select **Copy** next to the CA certificate and
-   paste it into a file named `ca.pem` on the machine where you will run
-   Terraform or `curl`.
+1. On the add-on's **Info** tab, select **Open Web UI**. Until the first
+   Twingate client connects, the page shows the next steps at the top and its
+   **Setup** section is open.
+2. In **Setup**, select **Copy** next to the CA certificate and paste it into
+   a file named `ca.pem` on the machine where you will run Terraform or
+   `curl`.
+3. In **Setup**, note the **Gateway address**, for example
+   `a0d7b954-twingate-gateway.local.hass.io:8443`, and the address under
+   **API proxy Resource**, `a0d7b954-twingate-gateway.local.hass.io`. Both
+   use the add-on's host name on Home Assistant's internal network (see
+   [The add-on's host name](#the-add-ons-host-name)): the Connector add-on
+   reaches the Gateway there on port `8443`, and the Gateway reaches the
+   proxy on port `8124`.
 
-The same section shows the certificate's subject, SHA-256 fingerprint and
-expiry date, and the Gateway address you need in step 3. This is the public
-certificate only; the CA private key never leaves the add-on. If **Copy**
-does not work in your browser, select the certificate text and copy it.
+**Setup** also shows the certificate's subject, SHA-256 fingerprint and
+expiry date. This is the public certificate only; the CA private key never
+leaves the add-on. If **Copy** does not work in your browser, select the
+certificate text and copy it.
 
-The add-on also prints the CA certificate on every start, so you can copy it
-from the **Log** tab instead. It looks like this:
+The add-on also prints the CA certificate, the Gateway address and the
+Resource address on every start, so you can copy them from the **Log** tab
+instead. It looks like this:
 
 ```text
 [12:00:00] INFO: The Gateway signs its TLS certificates with this CA. Twingate Clients trust the Gateway only if this CA certificate is registered in Twingate as the X.509 certificate authority of the Gateway.
@@ -110,12 +175,14 @@ from the **Log** tab instead. It looks like this:
 -----BEGIN CERTIFICATE-----
 MIIB...
 -----END CERTIFICATE-----
+...
+[12:00:00] INFO: Gateway address for Twingate: a0d7b954-twingate-gateway.local.hass.io:8443 when the Twingate Connector add-on runs on this Home Assistant; for a Connector elsewhere, the host's LAN IP address with the host port of 8443/tcp.
+[12:00:00] INFO: Home Assistant API proxy on port 8124/tcp. Point a Web App Resource at a0d7b954-twingate-gateway.local.hass.io with upstream port 8124 to use it without a Home Assistant token.
 ```
 
 Copy everything from `-----BEGIN CERTIFICATE-----` to
 `-----END CERTIFICATE-----`, including those two lines, into a file named
-`ca.pem` on the machine where you will run Terraform or `curl`. This is the
-public certificate only; the CA private key never leaves the add-on.
+`ca.pem` on the machine where you will run Terraform or `curl`.
 
 ### Step 3: Register the CA, the Gateway and the Resource in Twingate
 
@@ -125,18 +192,18 @@ Twingate documents these objects through its
 Use either option below. Both create three objects:
 
 1. **X.509 certificate authority**: the contents of `ca.pem`.
-2. **Gateway**: the address where the Connector reaches this add-on,
-   `<home-assistant-ip>:8443` (shown as **Gateway address** in the Web UI),
-   in the Remote Network of the Connector add-on, using the CA from 1.
+2. **Gateway**: the address where the Connector reaches this add-on, the
+   add-on's host name from step 2 with port `8443`, for example
+   `a0d7b954-twingate-gateway.local.hass.io:8443` (shown as **Gateway
+   address** in the Web UI), in the Remote Network of the Connector add-on,
+   using the CA from 1. The Connector add-on on the same Home Assistant
+   resolves this name. For a Connector on another machine, see
+   [Using the host's IP address instead](#using-the-hosts-ip-address-instead).
 3. **Web App Resource** for the Home Assistant API, bound to the Gateway:
-   - **Address**: `<home-assistant-ip>`. The Gateway sends requests to this
-     address, so it must be reachable from the add-on container. Use the
-     Home Assistant host's LAN IP address.
-   - **Upstream port**: the port Home Assistant answers on. This is `8123` on
-     most installations. Home Assistant's HTTP documentation says Home
-     Assistant OS defaults to port `80` from release 2026.8, so use the port
-     in the address you open Home Assistant with on your LAN. The examples use
-     `8123`.
+   - **Address**: the add-on's host name from step 2, for example
+     `a0d7b954-twingate-gateway.local.hass.io`. The Gateway runs in the same
+     add-on and sends requests to this address, which is the API proxy.
+   - **Upstream port**: `8124`, the proxy's port.
    - **Alias**: the name clients use, for example `ha-api.int`. The Twingate
      Client recognizes it; choose a name that does not clash with a real host
      name.
@@ -150,11 +217,12 @@ Replace these placeholders in the examples:
 | `<network>` | Your Twingate network name, from `https://<network>.twingate.com`. |
 | `<api-token>` | Your Twingate API key. |
 | `<remote-network-id>` | ID of the Remote Network the Connector add-on belongs to. Open **Network** > **Remote Networks** in the Admin Console and select it; the ID is the last part of the URL, `https://<network>.twingate.com/networks/<remote-network-id>`. |
-| `<home-assistant-ip>` | LAN IP address of the Home Assistant host. |
+| `<add-on-host>` | The add-on's host name from step 2, with `.local.hass.io`, for example `a0d7b954-twingate-gateway.local.hass.io`. The Gateway address and the Resource address both use it. |
+| `<home-assistant-ip>` | Only for a Connector on another machine: LAN IP address of the Home Assistant host. |
 
 Clients connect with plain `http://`. The traffic is still encrypted: inside
 the Twingate tunnel, and inside the TLS connection between the Twingate Client
-and the Gateway.
+and the Gateway. Between the Gateway and the proxy it stays inside the add-on.
 
 #### Option A: Terraform
 
@@ -182,7 +250,7 @@ later. The `twingate_web_app_resource` resource needs provider 5.0.0 or later.
 
    locals {
      remote_network_id = "<remote-network-id>"
-     home_assistant_ip = "<home-assistant-ip>"
+     addon_host        = "<add-on-host>"
    }
 
    resource "twingate_x509_certificate_authority" "home_assistant_gateway" {
@@ -192,7 +260,7 @@ later. The `twingate_web_app_resource` resource needs provider 5.0.0 or later.
 
    resource "twingate_gateway" "home_assistant" {
      remote_network_id = local.remote_network_id
-     address           = "${local.home_assistant_ip}:8443"
+     address           = "${local.addon_host}:8443"
      x509_ca_id        = twingate_x509_certificate_authority.home_assistant_gateway.id
    }
 
@@ -200,7 +268,7 @@ later. The `twingate_web_app_resource` resource needs provider 5.0.0 or later.
      name              = "Home Assistant API"
      remote_network_id = local.remote_network_id
      gateway_id        = twingate_gateway.home_assistant.id
-     address           = local.home_assistant_ip
+     address           = local.addon_host
      alias             = "ha-api.int"
 
      downstream = {
@@ -208,7 +276,7 @@ later. The `twingate_web_app_resource` resource needs provider 5.0.0 or later.
      }
 
      upstream = {
-       port = 8123
+       port = 8124
      }
    }
    ```
@@ -233,7 +301,7 @@ not, the `error` field says why.
    export TWINGATE_NETWORK="<network>"
    export TWINGATE_API_TOKEN="<api-token>"
    export REMOTE_NETWORK_ID="<remote-network-id>"
-   export HOME_ASSISTANT_IP="<home-assistant-ip>"
+   export ADDON_HOST="<add-on-host>"
 
    twingate_graphql() {
      curl -sS -X POST "https://${TWINGATE_NETWORK}.twingate.com/api/graphql/" \
@@ -278,7 +346,7 @@ not, the `error` field says why.
    }'
 
    jq -n --arg query "$QUERY" \
-     --arg address "${HOME_ASSISTANT_IP}:8443" \
+     --arg address "${ADDON_HOST}:8443" \
      --arg remoteNetworkId "$REMOTE_NETWORK_ID" \
      --arg x509CAId "$X509_CA_ID" \
      '{query: $query, variables: {address: $address, remoteNetworkId: $remoteNetworkId, x509CAId: $x509CAId}}' \
@@ -308,7 +376,7 @@ not, the `error` field says why.
    }'
 
    jq -n --arg query "$QUERY" \
-     --arg address "$HOME_ASSISTANT_IP" \
+     --arg address "$ADDON_HOST" \
      --arg gatewayId "$GATEWAY_ID" \
      --arg remoteNetworkId "$REMOTE_NETWORK_ID" \
      '{query: $query, variables: {
@@ -318,40 +386,385 @@ not, the `error` field says why.
         gatewayId: $gatewayId,
         remoteNetworkId: $remoteNetworkId,
         downstream: {port: 80},
-        upstream: {port: 8123}
+        upstream: {port: 8124}
       }}' \
      | twingate_graphql | tee resource.json
+
+   RESOURCE_ID=$(jq -r '.data.webAppResourceCreate.entity.id' resource.json)
+   echo "RESOURCE_ID=${RESOURCE_ID}"
    ```
 
-Keep the printed `GATEWAY_ID`; you need it if you ever replace the CA.
+Keep the printed `GATEWAY_ID` and `RESOURCE_ID`; you need them to change the
+Gateway or the Resource later, for example to replace the CA or to
+[move to another repository URL](#moving-to-another-repository-url-or-reinstalling).
 
 After either option, the CA is listed in the Admin Console under
 **Settings** > **Certificate Authorities**.
 
-**Upstream TLS:** these examples assume Home Assistant answers plain HTTP on
-its port. If you set an SSL certificate in Home Assistant's HTTP server
-settings so that it serves HTTPS itself, the Resource needs an upstream TLS
-mode. The Terraform provider has `upstream.tls_mode` from version 5.2.0:
-`VERIFY_CA` for a certificate from a public CA (the host name is not checked,
-which matters because the Gateway connects by IP address) or `INSECURE` for a
-self-signed certificate. The public API reference does not list this field.
-
-**Downstream TLS:** the Resource's downstream TLS mode defaults to none, which
-is what this guide uses. The Terraform provider also offers
+**Upstream TLS and downstream TLS:** keep both at their defaults (none). The
+proxy speaks plain HTTP inside the add-on and accepts only tokens for
+Resources with upstream TLS mode none. The Terraform provider also offers
 `downstream.tls_mode = "TLS13"` (provider 5.2.0 or later), where clients
 connect with `https://`; every client device must then trust the add-on's CA.
 This guide does not cover that setup.
 
-### Step 4: Add the Home Assistant token to the add-on
+#### Using the host's IP address instead
 
-1. Decide which Home Assistant user the API calls run as. A dedicated user
-   keeps those calls apart from your own in Home Assistant and lets you revoke
-   them separately. For the MCP endpoint `/api/mcp` with default settings,
-   the user must be an administrator (see step 7).
-2. Signed in as that user, open the user profile, then the **Security** tab.
+**Gateway address:** the add-on's host name is known only on Home
+Assistant's internal network. For a Twingate Connector on another machine,
+use the Home Assistant host's LAN IP address and the host port of
+`8443/tcp` as the Gateway address: `<home-assistant-ip>:8443` with the
+default port. The host then needs a fixed LAN IP address (a DHCP reservation
+or a static address). In Terraform, set the Gateway's `address` to
+`"<home-assistant-ip>:8443"`; with curl, pass that address when you create
+the Gateway. A Resource address with the add-on's host name has not been
+tested with such a Connector; the Resource can use the host's IP address too
+(see below).
+
+**Resource address:** if you prefer the Resource address to be the Home
+Assistant host's LAN IP address, as in the request header setup, publish the
+proxy: in the add-on's **Network** section, set a host port for `8124/tcp`
+(for example `8124`), restart the add-on, and use that host port as the
+Resource's upstream port. The Gateway then reaches the proxy through the
+host. This works too, but it opens the proxy's port on your LAN (it still
+answers only requests with a valid Twingate token for this Resource; see
+[Network exposure](#network-exposure)). The add-on's host name is
+recommended.
+
+### Step 4: Grant access in Twingate
+
+Access to the Resource is the only thing that decides who can use the Home
+Assistant API through the proxy: everyone who has it gets the access level
+set with the toggles in step 1, and the add-on does not tell them apart.
+
+1. In the Admin Console, open the **Home Assistant API** Resource and give
+   access only to the users, groups and service accounts that may do
+   everything the toggles allow.
+2. For unattended agents, use a service account: under **Team** >
+   **Services**, create a service account, add the **Home Assistant API**
+   Resource to it and generate a Service Key. Run the Twingate Client in
+   headless mode with that key on the agent's machine
+   ([Linux](https://www.twingate.com/docs/linux-headless),
+   [Windows](https://www.twingate.com/docs/windows-headless)). See
+   [Services](https://www.twingate.com/docs/services). The proxy treats a
+   service account like a user: same access level, and its name in the log.
+3. For people, install the [Twingate Client](https://www.twingate.com/download)
+   on the machine that runs the script or agent and sign in.
+
+### Step 5: Test
+
+On a machine with a signed-in Twingate Client that has access to the
+Resource, run:
+
+```bash
+curl http://ha-api.int/api/
+```
+
+Do not pass an `Authorization` header. The expected response, with
+**Allow reading** or **Allow changes (write)** on, is:
+
+```json
+{"message": "API running."}
+```
+
+Any other Home Assistant REST endpoint works the same way, for example
+`curl http://ha-api.int/api/states`. Each request appears under
+**API proxy requests** in the Web UI and in the add-on log, for
+example:
+
+```text
+Proxy: alice@example.com [read] GET /api/states -> 200 in 14 ms
+```
+
+The word in brackets is the access level, the same for every caller:
+`read`, `mcp`, `read+mcp`, `write` or `none`.
+
+A request outside the access level is answered with `403 Forbidden`, which
+names the toggle that would allow it. For example, with **Allow MCP** off,
+`curl http://ha-api.int/api/mcp` returns:
+
+```json
+{"message": "Forbidden: this request needs 'Allow MCP' in the Twingate Gateway add-on."}
+```
+
+To allow it, turn on **Allow MCP** on the add-on's **Configuration** tab (or
+**Allow changes (write)** for everything that is not always blocked), save,
+and restart the add-on; it then applies to everyone with access to the
+Resource. The add-on log names the toggle too, for example
+`Proxy: alice@example.com [read] GET /api/mcp -> 403 (denied) in 2 ms; needs 'Allow MCP'`;
+see [`403 Forbidden` from the proxy](#403-forbidden-from-the-proxy).
+
+### Step 6: Use the WebSocket API (optional)
+
+Home Assistant's WebSocket API at `ws://ha-api.int/api/websocket` works
+through the proxy, with **Allow reading** or **Allow changes (write)** on;
+otherwise opening it gets `403 Forbidden`. Clients go through the normal
+authentication exchange, with any non-empty text as the access token: the
+proxy identified the caller already, by its Twingate token. This has not yet
+been tried on a real installation.
+
+1. The proxy sends `{"type": "auth_required", "ha_version": "..."}`.
+2. The client sends `{"type": "auth", "access_token": "twingate"}` (any
+   non-empty placeholder).
+3. The proxy answers `{"type": "auth_ok", "ha_version": "..."}`, or
+   `auth_invalid` for an empty or malformed message, as Home Assistant does.
+
+After that the client sends commands as usual. A command outside the access
+level gets an error result for its `id`, in Home Assistant's form
+(`"success": false`, `"code": "unauthorized"`, with a message such as
+`Unauthorized: call_service needs 'Allow changes (write)' in the Twingate Gateway add-on.`),
+and the connection stays open. Client libraries that ask for a long-lived token accept the
+placeholder. The connection closes when the caller's Twingate token expires;
+reconnect then.
+
+### Step 7: Connect an MCP client (optional)
+
+Connecting an MCP client has not yet been tried on a real installation.
+
+1. Enable the Model Context Protocol integration (`mcp_server`) in Home
+   Assistant. In current releases, go to **Settings** > **System** > **AI**
+   and select **Enable** on the **Model Context Protocol** card if it is
+   shown.
+2. Choose what the endpoint exposes. The proxy passes the main URL
+   `/api/mcp` on when **Allow MCP** is on; **what it offers is set in Home
+   Assistant, not by the proxy.** By default it exposes all sets of AI tools,
+   including the **Home Assistant** set, which can read all entities, logs
+   and history and has a tool (`homeassistant__call_action`) that performs
+   any action on any entity, not only on the entities exposed to Assist. To
+   limit it, next to **Main URL**, select **Configure**, turn off
+   **Expose all AI tools** and select only **Device control**. You can also
+   turn on **Read-only**. **Device control** only reaches the entities
+   exposed to voice assistants; choose them under **Settings** >
+   **Voice assistants**, on the **Expose** tab.
+   **Require an administrator account** can stay on: the proxy acts as Home
+   Assistant's Supervisor user, an administrator.
+3. On the add-on's **Configuration** tab, turn on **Allow MCP**, save and
+   restart the add-on. MCP is then open to everyone with access to the
+   Resource, not only to the agent (see [API access](#api-access)).
+4. Add the server to your MCP client with the alias URL and no
+   authentication. For example, with Claude Code:
+
+   ```bash
+   claude mcp add --transport http homeassistant http://ha-api.int/api/mcp
+   ```
+
+   No header and no OAuth sign-in are needed. The sign-in steps in Home
+   Assistant's MCP documentation do not apply here.
+
+Other MCP clients that support the Streamable HTTP transport work the same
+way. The individual URLs `/api/mcp/<id>`, such as `/api/mcp/assist`, need
+**Allow changes (write)**: they would let MCP callers bypass the main URL's
+settings.
+Whatever Home Assistant exposes, the proxy refuses for every caller calls
+to the Supervisor integration's MCP tools (`hassio__...`, which read the
+logs of the host and of every add-on through the Supervisor) and calls of
+`call_action` tools for actions of the `hassio` and `backup` domains (see
+[MCP](#mcp)).
+
+### The add-on's host name
+
+The add-on's host name is its slug with `_` replaced by `-`, for example
+`a0d7b954-twingate-gateway`. With `.local.hass.io` it is the Gateway address
+(with port `8443`) and the Resource address. Home Assistant shows it on the
+add-on's **Info** tab as **Hostname**, and the slug is part of the address of
+the add-on's page in Home Assistant. The Web UI shows both addresses under
+**Setup**.
+
+The slug is `<hash>_twingate-gateway`. The hash is the first 8 hexadecimal
+characters of the SHA-1 hash of the repository URL as you added it to Home
+Assistant, converted to lowercase, including a `#branch` suffix. All add-ons
+from one repository entry share the hash; the Connector add-on, for example,
+is `a0d7b954-twingate-connector`.
+
+The host name changes only when the repository URL changes: another branch
+suffix, another repository, or the same address spelled differently. It
+stays the same when you update, rebuild or restart the add-on, change its
+options, or restore a backup with the same repository URL. See
+[Moving to another repository URL or reinstalling](#moving-to-another-repository-url-or-reinstalling).
+
+## API access
+
+Three toggles on the add-on's **Configuration** tab set what callers may do
+through the proxy:
+
+| Toggle | Option | Default | Allows |
+| --- | --- | --- | --- |
+| **Allow reading** | `allow_read` | On | Reads over REST and WebSocket, no actions, no templates |
+| **Allow MCP** | `allow_mcp` | Off | `/api/mcp`, every method; what it can do is set in Home Assistant's MCP Server settings (by default: any action on any entity) |
+| **Allow changes (write)** | `allow_write` | Off | Everything that is not always blocked, reading and MCP included |
+
+- **One access level for everyone.** The toggles apply to every caller
+  whose Twingate token the proxy verifies, that is, to everyone who has
+  access to the Resource in Twingate. The proxy does not look at Twingate
+  groups. The add-on cannot give different people different access: decide
+  in Twingate who gets the Resource, and give it only to the people and
+  agents that may do everything the toggles allow.
+- **Write includes the others.** With **Allow changes (write)** on, reading
+  and MCP are allowed as well, and the other two toggles make no
+  difference. Reading and MCP are independent of each other: MCP does not
+  include reading, and reading does not include MCP.
+- **Reading is on by default.** Anyone Twingate lets through can read all
+  states. Turn it off if callers only need MCP.
+- **All off** refuses every request with `403 Forbidden`, and the add-on
+  logs a warning at start. The request header setup is not affected.
+- A request outside the access level gets `403 Forbidden` with the toggle
+  that would allow it, for example
+  `Forbidden: this request needs 'Allow changes (write)' in the Twingate Gateway add-on.`;
+  a WebSocket command gets an error result with the same hint.
+- The add-on logs the access level at every start, for example
+  `API access for every caller of the Resource: read, MCP.`, and the Web UI
+  shows it under **API access**.
+- Every caller acts as the same Home Assistant user, the built-in
+  **Supervisor** user, which is an administrator. Home Assistant's own
+  permissions therefore do not apply per person, and Home Assistant's logs
+  and history show the Supervisor user. The add-on log and the Web UI record
+  who made each request.
+
+### Reading
+
+Reading is an allow-list: everything not listed is denied, including
+commands that a later Home Assistant release adds.
+
+REST (`HEAD` is allowed wherever `GET` is):
+
+| Request | What it returns |
+| --- | --- |
+| `GET /api/` | API status |
+| `GET /api/config`, `GET /api/core/state`, `GET /api/components` | Configuration, run state, loaded integrations |
+| `GET /api/states`, `GET /api/states/<entity_id>` | States |
+| `GET /api/services`, `GET /api/events` | Available actions, event listener counts |
+| `GET /api/history/period[/<time>]`, `GET /api/logbook[/<time>]` | History, logbook |
+| `GET /api/calendars`, `GET /api/calendars/<entity_id>` | Calendars and their events |
+| `GET /api/config/config_entries/entry` | Integration entries (no credentials) |
+
+WebSocket commands: `ping`, `supported_features`, `unsubscribe_events`,
+`get_states`, `get_config`, `get_services`, `subscribe_entities`,
+`subscribe_events` (only for the event types Home Assistant lets
+non-administrators subscribe to, such as `state_changed` and the registry
+updates; not `call_service` or all events, which can carry codes and
+passwords), `entity/source`, `manifest/list`, `manifest/get`,
+`extract_from_target`, `get_services_for_target`, `auth/current_user`
+(the connection's own user, which client libraries such as Node-RED's ask
+for right after connecting), `config/entity_registry/list`, `config/entity_registry/list_for_display`,
+`config/entity_registry/get`, `config/entity_registry/get_entries`,
+`config/device_registry/list`, `config/area_registry/list`,
+`config/floor_registry/list`, `config/label_registry/list`,
+`config/category_registry/list`, `config_entries/get`,
+`history/history_during_period`, `history/stream`, `logbook/get_events`,
+`logbook/event_stream`, `recorder/statistics_during_period`,
+`recorder/statistic_during_period`, `recorder/list_statistic_ids`,
+`recorder/get_statistics_metadata`, `energy/get_prefs`, `energy/info`,
+`search/related`, `todo/item/list`, `todo/item/subscribe`,
+`calendar/event/subscribe`, `weather/subscribe_forecast`,
+`persistent_notification/get`, `persistent_notification/subscribe`,
+`repairs/list_issues`, `lovelace/config`, `lovelace/dashboards/list` and
+`lovelace/info`.
+
+Deliberately not in reading, although they change nothing: the event stream
+`/api/stream` and subscriptions to all events (they carry the data of every
+action, including codes), logs and diagnostics (`/api/error_log`,
+`system_log/list`, traces), camera and image proxies and anything that
+returns URLs that work like credentials (`camera/stream`,
+`media_source/resolve_media`, `auth/sign_path`), and the configuration of
+automations and scripts (it can hold codes and webhook IDs, and anyone who
+knows a webhook ID can trigger it). Webhooks (`/api/webhook/...`) need
+**Allow changes (write)**, because calling one runs automations. Templates
+(`POST /api/template`, `render_template`) need it too: a template cannot
+act, but an expensive one can keep Home Assistant busy.
+
+Reading shows every state with all its attributes. Some attributes work like
+credentials outside the proxy: for example, the `access_token` of a camera
+entity lets anyone who reaches Home Assistant directly fetch that camera's
+images.
+
+### MCP
+
+**Allow MCP** allows the path `/api/mcp` with every method the Supervisor
+passes on (`GET`, `POST`, `DELETE`). **What an MCP client can do is what
+Home Assistant's MCP Server settings expose** (see step 7). With their
+defaults that includes `homeassistant__call_action`, which performs any
+action on any entity, so MCP is then close to write access for actions; it
+is limited to the entities exposed to Assist only if you configure the MCP
+Server integration that way.
+
+The proxy reads every request to `/api/mcp` and `/api/mcp/<id>` before
+passing it on. It accepts only `Content-Type: application/json` (with no
+charset, or `charset=utf-8`) and a body of UTF-8 JSON, and answers anything
+else with `400 Bad Request`. It refuses, for every caller, calls to the
+Supervisor integration's tools (`hassio__...`), and calls of any
+`call_action` tool whose action is in the `hassio` or `backup` domain or is
+not given as plain text `domain.action`; the client gets a JSON-RPC error.
+It does not look into other tools.
+
+### Write
+
+**Allow changes (write)** allows every request that is not always blocked,
+including everything reading and MCP allow. The Supervisor passes on `GET`,
+`HEAD`, `POST` and `DELETE` only; other methods get
+`405 Method Not Allowed`.
+
+### Always blocked
+
+Blocked for every caller, write included, because they lead from Home
+Assistant into the Supervisor or the host, manage accounts and credentials,
+or restore the system:
+
+- REST: `/api/hassio...` (Home Assistant's proxies into the Supervisor,
+  including its add-on ingress proxy and Supervisor login endpoints),
+  `/api/backup/...` (downloading and uploading backups),
+  `/api/onboarding...` (creating the owner account and restoring backups
+  during onboarding), `/api/repairs/issues/fix...` (repair flows; those of
+  the Supervisor reboot the host or repair the system), and actions of the
+  `hassio` and `backup` domains (`/api/services/hassio/...`,
+  `/api/services/backup/...`).
+- WebSocket: every command type under `supervisor/` (including
+  `supervisor/api`, which reaches the whole Supervisor API), `hassio/`,
+  `auth` (long-lived access tokens, signed paths, refresh tokens, MFA;
+  only `auth/current_user`, which reads the connection's own user, is
+  allowed),
+  `config/auth/` (users), `config/auth_provider/` (passwords and usernames),
+  `backup/` (creating, restoring and configuring backups) and
+  `debug_console/` (runs Python inside Home Assistant); `call_service` for
+  the `hassio` and `backup` domains; and `execute_script` when any of its
+  steps calls such an action, or names its action with a template.
+- MCP: calls to tools of the Supervisor integration (`hassio__...`), and
+  `call_action` calls for actions of the `hassio` and `backup` domains.
+
+Domains and paths are compared without regard to letter case, after
+decoding. Paths that could mean something else after another decoding
+(encoded slashes, dots, percent signs, question marks or hashes, empty
+segments) are refused with `400 Bad Request`.
+
+**Write is not a security boundary.** It is a block-list on an
+administrator API, and there are indirect routes to the blocked actions: an
+automation or script that calls them, the update entities and switches of
+add-ons that Home Assistant's Supervisor integration provides,
+`shell_command` actions, and more. Turn on **Allow changes (write)** only if
+everyone with access to the Resource is a person or agent you would trust
+with an administrator account.
+
+## Alternative: a long-lived token in a request header
+
+Before version 0.3.0, the Gateway added a Home Assistant long-lived access
+token to every request it forwarded to Home Assistant on port 8123. This
+still works unchanged; nothing needs to change in an existing setup. It
+covers REST and MCP, not the WebSocket API, and every caller has all the
+rights of the token's user. To move an existing setup to the proxy, see
+[Switching from the request header setup to the proxy](#switching-from-the-request-header-setup-to-the-proxy).
+To set it up:
+
+1. In step 3, use the Home Assistant host's LAN IP address as the
+   Resource's **Address** and the port Home Assistant answers on (`8123` on
+   most installations; Home Assistant OS defaults to port `80` from release
+   2026.8) as its **Upstream port**.
+2. Decide which Home Assistant user the API calls run as. A dedicated user
+   keeps those calls apart from your own in Home Assistant and lets you
+   revoke them separately. For the MCP endpoint `/api/mcp` with default
+   settings, the user must be an administrator.
+3. Signed in as that user, open the user profile, then the **Security** tab.
    Under **Long-lived access tokens**, create a token, for example named
    `Twingate Gateway`. Copy it; Home Assistant shows it only once.
-3. On the add-on's **Configuration** tab, add the header. In YAML mode the
+4. On the add-on's **Configuration** tab, add the header. In YAML mode the
    option looks like this:
 
    ```yaml
@@ -362,109 +775,200 @@ This guide does not cover that setup.
 
    In the form, add one entry with the name `Authorization` and the value
    `Bearer <long-lived-token>`. Keep the space after `Bearer`.
-4. Save and restart the add-on. The log then shows:
+5. Save and restart the add-on. The log then shows:
 
    ```text
    [12:00:00] INFO: Request headers injected into Web App requests: Authorization (values are not logged).
    ```
 
-### Step 5: Grant access in Twingate
+The access toggles do not apply to this setup; the proxy only handles
+requests for a Resource that points at it. Both setups can be used side by
+side on one Gateway, with two Resources.
 
-1. In the Admin Console, open the **Home Assistant API** Resource and give
-   access only to the groups that should use the Home Assistant API.
-2. For unattended agents, use a service account: under **Team** >
-   **Services**, create a service account, add the **Home Assistant API**
-   Resource to it and generate a Service Key. Run the Twingate Client in
-   headless mode with that key on the agent's machine
-   ([Linux](https://www.twingate.com/docs/linux-headless),
-   [Windows](https://www.twingate.com/docs/windows-headless)). See
-   [Services](https://www.twingate.com/docs/services).
-3. For people, install the [Twingate Client](https://www.twingate.com/download)
-   on the machine that runs the script or agent and sign in.
+**Upstream TLS:** this setup assumes Home Assistant answers plain HTTP on its
+port. If you set an SSL certificate in Home Assistant's HTTP server settings
+so that it serves HTTPS itself, the Resource needs an upstream TLS mode. The
+Terraform provider has `upstream.tls_mode` from version 5.2.0: `VERIFY_CA`
+for a certificate from a public CA (the host name is not checked, which
+matters because the Gateway connects by IP address) or `INSECURE` for a
+self-signed certificate. The public API reference does not list this field.
 
-### Step 6: Test
+### Switching from the request header setup to the proxy
 
-On a machine with a signed-in Twingate Client that has access to the
-Resource, run:
+An existing request header setup keeps working after the update to 0.3.0,
+so you can switch when it suits you. Updating an existing installation from
+0.2.0 to 0.3.0 in place has not yet been tried on a real installation.
+
+1. Update the add-on to 0.3.0 or later.
+2. On the **Configuration** tab, set the access toggles (see
+   [API access](#api-access)). In the request header setup every caller had
+   all the rights of the token's user; with the proxy and the defaults,
+   callers can only read. Turn on **Allow MCP** for MCP clients, or
+   **Allow changes (write)** if callers need to act. Leave `request_headers`
+   as it is for now. Save and restart the add-on.
+3. In the Web UI, note the **Gateway address** and the address under
+   **API proxy Resource** in **Setup** (see
+   [The add-on's host name](#the-add-ons-host-name)).
+4. In Twingate, change the Resource's **Address** to the add-on's host name
+   and its **Upstream port** to `8124`, as shown below. Its upstream TLS mode
+   must be none. With the Connector add-on on the same Home Assistant, you
+   can also change the Gateway address to the add-on's host name.
+5. Test as in [step 5](#step-5-test).
+6. Remove the `Authorization` entry from `request_headers`. Save and restart
+   the add-on.
+7. In Home Assistant, delete the long-lived access token: in the profile of
+   the user it belongs to, on the **Security** tab, under
+   **Long-lived access tokens**.
+
+With Terraform, change these arguments in `main.tf` and run
+`terraform apply`:
+
+```hcl
+locals {
+  remote_network_id = "<remote-network-id>"
+  addon_host        = "<add-on-host>"
+}
+
+resource "twingate_gateway" "home_assistant" {
+  # Other arguments unchanged. Optional, with the Connector add-on on the
+  # same Home Assistant:
+  address = "${local.addon_host}:8443"
+}
+
+resource "twingate_web_app_resource" "home_assistant_api" {
+  # Other arguments unchanged.
+  address = local.addon_host
+
+  upstream = {
+    port = 8124
+  }
+}
+```
+
+With curl, set the values and define `twingate_graphql` as in step 3,
+[Option B](#option-b-twingate-api-with-curl), step 1, and set the IDs:
 
 ```bash
-curl http://ha-api.int/api/
+export GATEWAY_ID="<gateway-id>"
+export RESOURCE_ID="<resource-id>"
 ```
 
-Do not pass an `Authorization` header. The expected response is:
+`<gateway-id>` is the `GATEWAY_ID` printed when you created the Gateway, and
+`<resource-id>` the ID of the Resource. Both are also in `gateway.json` and
+`resource.json` from then, under `.data.gatewayCreate.entity.id` and
+`.data.webAppResourceCreate.entity.id`. To list your Gateways with their IDs,
+addresses and CAs:
 
-```json
-{"message": "API running."}
+```bash
+QUERY='query {
+  gateways(first: 20) {
+    edges { node { id address x509CA { id name fingerprint } } }
+  }
+}'
+
+jq -n --arg query "$QUERY" '{query: $query}' | twingate_graphql | tee gateways.json
 ```
 
-Any other Home Assistant REST endpoint works the same way, for example
-`curl http://ha-api.int/api/states`. Each request appears under
-**Recent requests** in the Web UI, and the audit log in the add-on log
-records it in full.
+Change the Resource's address and upstream port:
 
-### Step 7: Connect an MCP client (optional)
+```bash
+QUERY='mutation($id: ID!, $address: String, $upstream: WebAppUpstreamInput) {
+  webAppResourceUpdate(id: $id, address: $address, upstream: $upstream) {
+    ok
+    error
+    entity { ... on WebAppResource { id } }
+  }
+}'
 
-1. Enable the Model Context Protocol integration (`mcp_server`) in Home
-   Assistant. In current releases, go to **Settings** > **System** > **AI**
-   and select **Enable** on the **Model Context Protocol** card if it is
-   shown.
-2. Choose what the endpoint exposes. By default the main URL `/api/mcp`
-   exposes all sets of AI tools, including the **Home Assistant** set, which
-   can read all entities, logs and history and perform any action, and it
-   requires an administrator account. To limit it:
-   - Next to **Main URL**, select **Configure**, turn off
-     **Expose all AI tools** and select only **Device control**. You can also
-     turn on **Read-only**. If the token's user is not an administrator, also
-     turn off **Require an administrator account**.
-   - Or use the individual URL `/api/mcp/assist`, which exposes only
-     **Device control** and does not require an administrator account.
-   - **Device control** only reaches the entities exposed to voice
-     assistants. Choose them under **Settings** > **Voice assistants**, on
-     the **Expose** tab.
-3. Add the server to your MCP client with the alias URL and no
-   authentication. For example, with Claude Code:
+jq -n --arg query "$QUERY" --arg id "$RESOURCE_ID" --arg address "$ADDON_HOST" \
+  '{query: $query, variables: {id: $id, address: $address, upstream: {port: 8124}}}' \
+  | twingate_graphql
+```
 
-   ```bash
-   claude mcp add --transport http homeassistant http://ha-api.int/api/mcp
-   ```
+Optionally, change the Gateway address:
 
-   No header and no OAuth sign-in are needed: the Gateway adds the token. The
-   sign-in steps in Home Assistant's MCP documentation do not apply here.
+```bash
+QUERY='mutation($id: ID!, $address: String) {
+  gatewayUpdate(id: $id, address: $address) {
+    ok
+    error
+    entity { id address }
+  }
+}'
 
-Other MCP clients that support the Streamable HTTP transport work the same
-way: point them at `http://ha-api.int/api/mcp` (or `/api/mcp/assist`) without
-authentication.
+jq -n --arg query "$QUERY" --arg id "$GATEWAY_ID" --arg address "${ADDON_HOST}:8443" \
+  '{query: $query, variables: {id: $id, address: $address}}' \
+  | twingate_graphql
+```
+
+Check that each response contains `"ok": true`.
 
 ## Web UI
 
 Select **Open Web UI** on the add-on's **Info** tab, or turn on
 **Show in sidebar** there to open it from the Home Assistant sidebar. The page
-is read-only and refreshes every 5 seconds. It shows:
+is read-only and refreshes every 5 seconds.
 
-- **Setup**: the CA certificate with a **Copy** button, its subject, SHA-256
-  fingerprint and expiry, and the Gateway address to register in Twingate.
-  The add-on cannot see the host's LAN IP address, so the address reads
-  `<home-assistant-ip>:8443` unless you opened Home Assistant by IP address;
-  then it suggests that address. The port is the host port set in the
-  **Network** section.
-- **Status**: whether the Gateway answers its health check, the Gateway
-  version and whether a newer 2.x release is available (see
-  [Gateway updates](#gateway-updates)), the Twingate network, whether the
-  Twingate signing keys are working, the static certificate, the add-on
-  version and the Gateway's uptime.
-- **Configuration**: the names of the injected request headers (never their
-  values), the certificate IP addresses, the audit log setting, the log level
-  and whether the CA is your own.
-- **Traffic**: open connections, closed proxy connections (connections from
-  Twingate Clients; health checks and rejected connections are not
-  included), successful and failed authentications, connections rejected
-  before a request (any connection that never completed TLS and a request,
-  including port probes and TLS handshakes that fail because the CA is not
-  registered in Twingate), HTTP responses by status class, latency, and
-  requests to Home Assistant, from the Gateway's metrics. The counters start
-  at zero when the add-on starts.
-- **Recent requests**: the newest 100 requests with time, Twingate user,
-  method, path, status and duration.
+The top of the page always shows four tiles: whether the Gateway answers its
+health check (with its version and uptime), whether the Twingate signing keys
+are working, whether the API proxy is running, and the open connections.
+Below them come the notices that need action: a newer Gateway release (see
+[Gateway updates](#gateway-updates); the steps are under **How to rebuild**),
+a request list that may be out of date, and, until the first Twingate client
+has authenticated, the next steps of the setup. Everything else is in
+sections that you open and close. The header of each section sums it up in
+one line, so a closed section still tells the essential fact:
+
+- **API proxy requests** (for example `12 requests, 2 denied, 1 blocked,
+  3 users`): the newest 100 requests and WebSocket commands the proxy
+  handled, with time, Twingate user, request, decision (allowed, with the
+  toggle that allowed it, such as `Allowed (Read)`; denied; blocked; no
+  valid token; too many at once), status and duration, and the counts since
+  the proxy started.
+- **Gateway requests** (for example `40 requests, 3 × 4xx, 2 users`): the
+  newest 100 requests through the Gateway, from its audit log, with time,
+  Twingate user, method, path, status and duration. Requests through the API
+  proxy appear in both lists.
+- **API access** (for example `Read on · MCP off · Write off`): the three
+  toggles, what each allows, and that they apply to everyone with access to
+  the Resource. With all three off, its header shows `All off`.
+- **Setup** (the Gateway address and the CA fingerprint): the Gateway address
+  to register in Twingate, with the add-on's host name and port `8443`, the
+  API proxy's Resource address and upstream port, and the CA certificate with
+  a **Copy** button, its subject, SHA-256 fingerprint, expiry and source.
+  Below the Gateway address, a line gives the address for a Connector on
+  another machine: the host's LAN IP address with the host port set in the
+  **Network** section. The add-on cannot see the host's LAN IP address, so
+  that line reads `<home-assistant-ip>:8443` unless you opened Home Assistant
+  by IP address; then it suggests that address.
+- **Traffic** (for example `9 connections, 9 authenticated, 0 failed;
+  6 × 2xx, 3 × 4xx`), from the Gateway's metrics: closed proxy connections
+  (connections from Twingate Clients; health checks and rejected connections
+  are not included), successful and failed authentications, connections
+  rejected before a request (any connection that never completed TLS and a
+  request, including port probes and TLS handshakes that fail because the CA
+  is not registered in Twingate), HTTP responses by status class to clients
+  and from the upstream, and latency. The counters start at zero when the
+  add-on starts.
+- **Status details** (for example `Gateway 2.1.0 healthy, proxy running,
+  keys loaded`): the Gateway's health check, its version and whether a newer
+  2.x release is available, the signing keys, the API proxy's state and its
+  own signing keys, whether the Gateway request list is up to date, the
+  uptime, the static certificate and the add-on version.
+- **Configuration** (for example `Network mynetwork, log level info, audit
+  log: add-on log, 0 injected headers`): also the names of the injected
+  request headers (never their values) and the certificate IP addresses.
+
+API proxy requests is open; Gateway requests is open when `request_headers`
+is set; Setup is open until the first Twingate client has authenticated; the
+other sections start closed. A section that shows an error or a warning
+opens by itself and has a badge in its header, for example `Proxy stopped`
+under **Status details** or `Port not published` under **Setup**; it never
+closes by itself. The two request lists show the newest 10 entries;
+**Show all** lists the rest. The browser remembers which sections you opened
+or closed, your **Show all** choices, and that a client has authenticated
+with this CA, so that the next steps do not come back after a restart of the
+add-on.
 
 **Signing keys** is derived from what the add-on can observe: successful
 client authentications (the Gateway accepts a Twingate token only after
@@ -473,13 +977,12 @@ verifying it with the signing keys), a check of the signing-key URL
 after the add-on starts and then every 15 minutes, or every 2 minutes while
 the check fails, and the network check at startup.
 
-What the Web UI never shows: request header values, the CA private key, the
-Supervisor token, or the headers recorded in the audit log. Paths in
-**Recent requests** are shown without their query string (marked `?…`),
-because query strings can carry secrets. For the same reason the webhook ID
-in `/api/webhook/<id>` paths is masked (`/api/webhook/***`): anyone who knows
-it can trigger the webhook. The Web UI keeps the recent requests in memory
-only.
+What the Web UI never shows: request header values, Twingate tokens, the CA
+private key, the Supervisor token, or the headers recorded in the audit log.
+Paths are shown without their query string (marked `?…`), because query
+strings can carry secrets. For the same reason the webhook ID in
+`/api/webhook/<id>` paths is masked (`/api/webhook/***`): anyone who knows it
+can trigger the webhook. The Web UI keeps the recent requests in memory only.
 
 How it gets the audit log: with `audit_log: addon_log`, the Gateway writes
 its audit log to its standard output. `s6-log`, the logger of the add-on's
@@ -491,16 +994,21 @@ headers, query strings or webhook IDs to the Web UI. With
 `audit_log: file`, the relay reads `audit.log` instead.
 The Gateway does not wait for the relay or the Web UI: if they stop, hang,
 restart or cannot start, requests through the Gateway and the audit log are
-not affected, and only the **Recent requests** list may be out of date. The
-Web UI then shows a warning in that section when the relay has not reported
-for 15 seconds. When the relay starts again, it reads the newest entries of
+not affected, and only the **Gateway requests** list may be out of date.
+The Web UI then shows a warning at the top of the page when the relay has
+not reported for 15 seconds. When the relay starts again, it reads the newest entries of
 the copy, so requests made while it was down usually appear in the list.
 The same holds when the copy cannot be kept: if `/dev/shm` is full, new
 entries are missing from the copy, and `s6-log` keeps them in memory until
 it can write them; if the copy cannot be set up, `s6-log` copies the audit
 log to the add-on log only until the add-on restarts, and says so in the
 log. Either way requests and the add-on log are not affected, and the Web UI
-shows a warning under **Recent requests**.
+shows a warning at the top of the page.
+
+The proxy sends its state and the summaries of its newest requests to the
+Web UI itself, every 5 seconds and after each request, without ever waiting
+for it. When the proxy has not reported for 15 seconds, the Web UI shows it as
+stopped and opens **Status details**.
 
 The memory of `s6-log` is limited to 64 MiB, enough for about 60 MB of
 entries waiting for a full `/dev/shm`, or for a single entry of about 18 MB.
@@ -517,15 +1025,17 @@ Assistant signs the user in; by default only administrators see the sidebar
 entry. The Web UI has no port on the host and accepts connections only from
 the Supervisor's ingress proxy. It runs as the unprivileged user `nobody`,
 which cannot read the Gateway configuration, the Supervisor token,
-`audit.log`, the copy of the audit log or the private key of the CA the
-add-on creates. With your own CA, the permissions of your key file decide;
-see [`custom_ca_keyfile`](#options-custom_ca_certfile-and-custom_ca_keyfile).
+`audit.log`, the copy of the audit log, the proxy's configuration or memory,
+or the private key of the CA the add-on creates. With your own CA, the
+permissions of your key file decide; see
+[`custom_ca_keyfile`](#options-custom_ca_certfile-and-custom_ca_keyfile).
 The relay runs as a second unprivileged user, `audit-relay`, which can read
-the copy of the audit log but none of the other files named above, and
-`s6-log` as a third, `audit-log`, which writes the copy. None of these users
-can stop or signal another's processes or the Gateway. With
-`audit_log: file`, the relay runs as root instead, because it needs root to
-read `audit.log`.
+the copy of the audit log but none of the other files named above, `s6-log`
+as a third, `audit-log`, which writes the copy, and the API proxy as a
+fourth, `api-proxy`, the only process besides root that has the Supervisor
+token. None of these users can read another's files or memory, or stop or
+signal another's processes or the Gateway. With `audit_log: file`, the relay
+runs as root instead, because it needs root to read `audit.log`.
 
 ## Configuration
 
@@ -534,9 +1044,10 @@ Example configuration:
 ```yaml
 network: <network>
 log_level: info
-request_headers:
-  - name: Authorization
-    value: "Bearer <long-lived-token>"
+allow_read: true
+allow_mcp: false
+allow_write: false
+request_headers: []
 certificate_ip_addresses: []
 audit_log: addon_log
 ```
@@ -549,20 +1060,33 @@ logs an error that names the option (never a header value) and stops.
 Your Twingate network name: the `<network>` part of
 `https://<network>.twingate.com`, 1 to 63 lowercase letters and digits. A
 pasted address such as `https://<network>.twingate.com/` is accepted. The
-Gateway uses it to fetch Twingate's public signing keys. At startup the add-on
-checks that the network exists and stops if Twingate reports that it does not;
-if Twingate cannot be reached, it logs a warning and starts anyway.
+Gateway uses it to fetch Twingate's public signing keys, and so does the API
+proxy. At startup the add-on checks that the network exists and stops if
+Twingate reports that it does not; if Twingate cannot be reached, it logs a
+warning and starts anyway.
 
 ### Option: `log_level`
 
 Level of the Gateway's system log: `debug`, `info` (default), `warn` or
-`error`. It does not affect the audit log or the add-on's own startup
-messages.
+`error`. It does not affect the audit log, the API proxy's request log or the
+add-on's own startup messages.
+
+### Options: `allow_read`, `allow_mcp` and `allow_write`
+
+The toggles **Allow reading**, **Allow MCP** and **Allow changes (write)**
+of the API proxy; see [API access](#api-access). They apply to everyone who
+has access to the Resource in Twingate. **Allow changes (write)** includes
+the other two.
+
+Default: reading on, MCP and write off. With all three off, the proxy
+refuses every request.
 
 ### Option: `request_headers`
 
-HTTP headers that the Gateway adds to every request it forwards. Each entry
-has a `name` and a `value`. The value field is masked in the user interface.
+HTTP headers that the Gateway adds to every request it forwards, for the
+[setup with a long-lived token](#alternative-a-long-lived-token-in-a-request-header).
+Not needed with the API proxy. Each entry has a `name` and a `value`. The
+value field is masked in the user interface.
 
 - Headers apply to every Web App Resource that uses this Gateway.
 - A header replaces any header of the same name sent by the client.
@@ -583,9 +1107,17 @@ has a `name` and a `value`. The value field is masked in the user interface.
 
 - Names may contain only letters, digits and ``!#$%&'*+-.^_`|~`` (no spaces
   or colons). Values may contain only printable ASCII characters. Each name
-  may appear once; names are case-insensitive.
+  may appear once; names are case-insensitive. `X-Twingate-Gateway-Token` is
+  reserved: the add-on sets it itself.
 - The add-on logs header names at startup but never their values. The
   Gateway's audit log does not record injected headers.
+
+Besides these headers, the add-on always makes the Gateway add
+`X-Twingate-Gateway-Token: {{jwt}}`, the client's Twingate token, so that
+the API proxy can identify the caller. It is added to requests for every Web
+App Resource on this Gateway, including a Resource that points at Home
+Assistant on port 8123 in the request header setup; Home Assistant ignores
+it.
 
 Default: no headers.
 
@@ -621,7 +1153,8 @@ Twingate identity, the incoming request headers and the response status:
   compressed old files are kept.
 
 With either setting, the Web UI shows summaries of the newest 100 requests
-(see [Web UI](#web-ui)).
+(see [Web UI](#web-ui)). The API proxy's request log always goes to the
+add-on log.
 
 ### Options: `custom_ca_certfile` and `custom_ca_keyfile`
 
@@ -650,8 +1183,20 @@ Default: not set.
 ### Network port: `8443/tcp`
 
 The Gateway's TLS listener. The Connector forwards connections for Web App
-Resources to `<home-assistant-ip>:<host port>`, so the Gateway address in
-Twingate must use the host port configured here (default `8443`).
+Resources to the Gateway address registered in Twingate. With the add-on's
+host name, `<add-on-host>:8443`, the Connector add-on on the same Home
+Assistant reaches the Gateway on Home Assistant's internal network, on port
+`8443`. With the host's LAN IP address, for a Connector on another machine,
+the Gateway address is `<home-assistant-ip>:<host port>` and must use the
+host port configured here (default `8443`).
+
+### Network port: `8124/tcp`
+
+The API proxy. Leave it empty (the default) when the Resource uses the
+add-on's host name from step 2: the Gateway reaches the proxy inside the
+add-on. Set a host port only for a Resource that uses the Home Assistant
+host's LAN IP address, and use that host port as the Resource's upstream
+port.
 
 ## TLS certificates and the CA
 
@@ -660,7 +1205,10 @@ Twingate must use the host port configured here (default `8443`).
 - It creates a new CA, with a warning in the log, when the stored CA cannot
   be used (for example it expired or a file is missing or damaged). A
   reinstalled add-on also starts with a new CA, because uninstalling removes
-  the add-on's data. Each new CA must be registered in Twingate; see
+  the add-on's data, and so does the add-on from a repository added under
+  another URL (see
+  [Moving to another repository URL or reinstalling](#moving-to-another-repository-url-or-reinstalling)).
+  Each new CA must be registered in Twingate; see
   [Troubleshooting](#clients-cannot-connect-after-the-ca-changed).
 - The CA is part of the add-on's data, so a backup of the add-on contains the
   CA private key, and restoring the backup restores the CA.
@@ -673,7 +1221,7 @@ moves to each new 2.x release. The Gateway is taken when Home Assistant builds
 the add-on, that is when you install, update or rebuild it, and keeps that
 version until the next build. The log names it at every start
 (`Starting Twingate Gateway 2.1.0 on port 8443/tcp ...`), and the Web UI shows
-it under **Status**.
+it under **Status details**.
 
 To update the Gateway to the newest 2.x release, rebuild the add-on:
 
@@ -703,16 +1251,16 @@ data about your installation; like any request, it shows Docker Hub your
 public IP address. It is not a pull and does not count against Docker Hub's
 pull rate limit.
 
-When a newer release is available, the Web UI shows a notice with the steps
-above at the top of the page, and the log says so after each start of the
+When a newer release is available, the Web UI shows a notice at the top of
+the page, with the steps above under **How to rebuild**, and the log says so after each start of the
 add-on and then at most once a day while it remains so:
 
 ```text
 Web UI: Twingate Gateway 2.2.0 is available; this add-on runs Gateway 2.1.0. To update, rebuild the add-on: ...
 ```
 
-Otherwise **Status** shows `Up to date (checked <time>)` next to the Gateway
-version. If the check fails, for example without internet access, it is tried
+Otherwise **Status details** shows `Up to date (checked <time>)` next to the
+Gateway version. If the check fails, for example without internet access, it is tried
 again after 5, 15 and then every 60 minutes. The Web UI then shows when the
 last check succeeded, or that none has yet; nothing else changes. The version
 it compares is the one the Gateway reports in its audit log, or, until the
@@ -724,59 +1272,208 @@ A new major version of the Gateway (3.x) is never installed by a rebuild. It
 comes with an update of the add-on, because its configuration, metrics or
 audit log may change.
 
+## Moving to another repository URL or reinstalling
+
+Home Assistant knows an add-on by its slug, which contains a hash of the
+repository URL (see [The add-on's host name](#the-add-ons-host-name)). If you
+add this repository under another URL, for example with another `#branch`
+suffix, Home Assistant treats its add-ons as new ones: they get new host
+names, and the new Gateway add-on starts with a new CA and empty options. To
+move:
+
+1. Stop the old Gateway and Connector add-ons. Host port `8443` and the
+   Connector's tokens can be used by only one running add-on at a time.
+2. Install the Twingate Connector and Twingate Gateway add-ons from the new
+   repository entry, configure them as before (the Connector with the same
+   tokens, the Gateway as in
+   [step 1](#step-1-install-and-configure-the-add-on)) and start them.
+3. In the new Gateway add-on's Web UI, copy the CA certificate into `ca.pem`
+   and note the new host name under **Setup**.
+4. Register the new CA in Twingate, and update the Gateway: its address, with
+   the new host name and port `8443`, and its CA.
+5. Change the Resource's address to the new host name. Its upstream port
+   stays `8124`.
+6. Test as in [step 5](#step-5-test).
+
+With Terraform, replace `ca.pem`, set `addon_host` in `main.tf` to the new
+host name and run `terraform apply`. The provider replaces the CA when the
+certificate changes and points the Gateway at the new one.
+
+With curl, set the values and the IDs as in
+[Switching from the request header setup to the proxy](#switching-from-the-request-header-setup-to-the-proxy),
+with the new host name in `ADDON_HOST`. Register the new CA with
+`x509CertificateAuthorityCreate` as in step 2 of
+[Option B](#option-b-twingate-api-with-curl) (it sets `X509_CA_ID`), then
+update the Gateway:
+
+```bash
+QUERY='mutation($id: ID!, $address: String, $x509CAId: ID) {
+  gatewayUpdate(id: $id, address: $address, x509CAId: $x509CAId) {
+    ok
+    error
+    entity { id address }
+  }
+}'
+
+jq -n --arg query "$QUERY" --arg id "$GATEWAY_ID" \
+  --arg address "${ADDON_HOST}:8443" --arg x509CAId "$X509_CA_ID" \
+  '{query: $query, variables: {id: $id, address: $address, x509CAId: $x509CAId}}' \
+  | twingate_graphql
+```
+
+Then change the Resource's address with the `webAppResourceUpdate` request
+from that section.
+
+Reinstalling the add-on from the same repository URL keeps its host name, so
+the Gateway address and the Resource stay as they are. It starts with a new
+CA, though: configure the add-on as in step 1, then register the new CA as in
+[Clients cannot connect after the CA changed](#clients-cannot-connect-after-the-ca-changed).
+Restoring a backup of the add-on, with the same repository URL, keeps both the
+host name and the CA.
+
 ## Security considerations
 
-### Keep the Home Assistant token in the add-on
+### The add-on acts as a Home Assistant administrator
 
-Put the token in the add-on's `request_headers` option, not in a per-Resource
-header rewrite in Twingate (`requestHeaderRewrites` in the API,
-`request_header_rewrites` in Terraform). Per-Resource rewrites are carried
-inside the Twingate access token that is delivered to each user's device. That
-token is signed but not encrypted, so anyone who has access to the Resource
-can read the value, and it is also readable through the Twingate API. Headers
-set in the add-on stay on the Home Assistant host.
+The proxy uses the Supervisor token that Home Assistant gives the add-on, and
+Home Assistant runs every proxied request as its Supervisor user, an
+administrator. The add-on could act as an administrator with the request
+header setup too, through the token in its options; the difference is that
+the Supervisor token is issued by Home Assistant to the add-on at every start
+and is not stored in the options or in backups. Inside the add-on, only the
+proxy's own user (`api-proxy`) and root have it; it is never logged and never
+shown in the Web UI.
 
-A per-Resource rewrite for `Authorization` would also override the add-on's
-header, so do not define one on this Resource.
+The access level is applied by the proxy, so a mistake in its rules is an
+access control mistake. Reading and MCP are allow-lists; write is a
+block-list and not a security boundary (see [Always blocked](#always-blocked)).
 
-### Use this Gateway only for the Home Assistant API
+### How the proxy knows the caller
 
-The add-on's headers apply to every Web App Resource that uses this Gateway.
-Any other Resource bound to it would receive your Home Assistant token. Bind
-only the Home Assistant API Resource to this Gateway.
+The proxy does not trust a header just because it is there: anything that
+can reach its port could send one. Instead it verifies the Twingate token
+that the Gateway passes on in `X-Twingate-Gateway-Token`, as the Gateway
+does: an ES256 signature by one of the network's signing keys (from
+`https://<network>.twingate.com/api/v1/jwk/ec`, read again every hour and
+when a token names a key it does not know, at most once a minute), the
+issuer, the network as audience, the expiry, and the token type and version.
+The username comes only from the verified token; the groups in it are not
+used. A request without
+a valid token gets `401 Unauthorized` and nothing else; the add-on log names
+the reason, at most once a minute per address.
 
-### Twingate access is the only gate
+The token must also be for this proxy: a Web App Resource with upstream TLS
+mode none and either the add-on's address (its host name, with or without
+`.local.hass.io`) with upstream port `8124`, or, only while `8124/tcp` is
+published on the host, an IPv4 address with the published host port. The
+proxy checks the Resource's address and port, not its identity; see the
+second limit below.
 
-Anyone granted the Resource, whether a user, a group member or a service
-account, acts as the token's Home Assistant user with all of that user's
-rights. Home Assistant sees the same token on every request and cannot tell
-callers apart; only the Gateway's audit log records who made a request.
+Limits of this check:
 
-- Grant the Resource only to the groups and service accounts that need it.
-- Use a dedicated Home Assistant user for the token, with no more rights than
-  the API use needs.
+- **The proxy cannot check the token's client-key binding.** The Gateway
+  accepts a token only together with proof that the client holds the key the
+  token was issued for, tied to the TLS connection; the proxy sees only the
+  token. Someone who holds a valid token for this Resource, in practice the
+  authorised client itself, can present it to the proxy's port directly
+  until it expires, bypassing the Gateway's audit log. The proxy logs every request itself, with the Twingate username, so
+  such requests still appear in the add-on log. With the recommended
+  Resource address, the proxy's port is not published, and only Home
+  Assistant and other add-ons on Home Assistant's internal network can reach
+  it.
+- **Tokens of other Resources are accepted if their address and port
+  match.** The proxy cannot tell your Resources apart by their identity.
+  With the add-on's host name, a token of any Web App Resource in your
+  Twingate network with that host name and upstream port `8124` is accepted,
+  for example one of another Home Assistant that runs this add-on. With a
+  published port, a token of any Web App Resource that points at any IPv4
+  address with that upstream port is accepted, for example a device on your
+  LAN that uses the same port number. Tokens of other Resources are refused.
+
+### The Twingate token goes to every Web App Resource on this Gateway
+
+The Gateway adds `X-Twingate-Gateway-Token` to requests for every Web App
+Resource that uses this Gateway. An upstream that receives it learns the
+caller's Twingate username and groups and holds a token it could present to
+the proxy, which refuses it unless the token is for the proxy's Resource.
+Bind only Home Assistant Resources to this Gateway, and do not define a
+per-Resource header rewrite for `X-Twingate-Gateway-Token` in Twingate: it
+would replace the token, and the proxy would refuse every request.
+
+### Keep a Home Assistant token in the add-on
+
+In the request header setup, put the token in the add-on's `request_headers`
+option, not in a per-Resource header rewrite in Twingate
+(`requestHeaderRewrites` in the API, `request_header_rewrites` in Terraform).
+Per-Resource rewrites are carried inside the Twingate access token that is
+delivered to each user's device. That token is signed but not encrypted, so
+anyone who has access to the Resource can read the value, and it is also
+readable through the Twingate API. Headers set in the add-on stay on the Home
+Assistant host. A per-Resource rewrite for `Authorization` would also override
+the add-on's header, so do not define one on this Resource. The add-on's
+headers, including the token, apply to every Web App Resource on this
+Gateway.
+
+### Twingate access is the first gate
+
+Twingate decides who reaches the Resource at all: users, groups, service
+accounts, device and policy checks. **Everyone it lets through has the same
+access level**, the one set with the toggles; the proxy tells callers apart
+only in its log. In the request header setup, the token's rights apply to
+everyone Twingate lets through in the same way.
+
+- Grant the Resource only to the users, groups and service accounts that
+  may do everything the toggles allow.
+- To give different people different access, the add-on cannot help:
+  Twingate decides who gets the Resource, and everyone who gets it has the
+  same access. Keep callers who should do less off the Resource.
+- Remember that reading is on by default: everyone with access to the
+  Resource can read all states.
 - To revoke one caller, remove its access in Twingate. Connections already
   open close when their Twingate access token expires.
-- To revoke everyone at once, delete the long-lived token in Home Assistant.
+- To revoke everyone at once, stop the add-on, or turn off all three
+  toggles and restart it (in the request header setup, delete the
+  long-lived token in Home Assistant).
 
 ### Keep browser access to Home Assistant separate
 
 Use a dedicated alias, such as `ha-api.int`, for API and agent access, and
 keep normal browser access to Home Assistant on an ordinary Twingate Resource
-that does not use this Gateway. If you opened the Home Assistant frontend
-through the Gateway:
+that does not use this Gateway. The proxy serves the API paths only (`/api/`)
+and not the frontend. In the request header setup, opening the frontend
+through the Gateway would make its REST calls carry the injected token
+instead of the signed-in user's own, and the audit log would record the
+browser's own request headers unredacted, including its session tokens.
 
-- The frontend's REST calls would carry the injected token instead of the
-  signed-in user's own, so they would run as the token's owner.
-- The audit log would record the browser's own request headers unredacted,
-  including its session tokens.
+### Limits per caller
 
-### What the audit log contains
+The proxy keeps at most 16 WebSocket connections and 16 REST or MCP
+requests in progress per Twingate user, and 64 of each in all. Beyond a
+user's share it answers `429 Too Many Requests`, beyond the total
+`503 Service Unavailable`. A request that cannot get a connection to the
+Supervisor within 15 seconds gets `503` instead of waiting.
+
+### Web pages of other sites
+
+The Twingate Client adds the caller's identity to every connection to the
+Resource from its device, also to connections that a browser on that device
+opens for any website. A malicious page could therefore send requests to
+`http://ha-api.int` as the device's user, or open the WebSocket API, whose
+authentication accepts any placeholder through the proxy. The proxy refuses
+such requests with `403 Forbidden`: browsers mark them with a
+`Sec-Fetch-Site` header other than `same-origin` or `none`, or with an
+`Origin` header that is not the address the request was sent to. Scripts and
+agents send neither header, or, like some WebSocket libraries, the address
+itself as `Origin`, which is accepted. In the request header setup the
+Gateway passes such requests on to Home Assistant with the injected token;
+another reason to keep browsers away from the alias.
+
+### What the logs contain
 
 The Gateway logs every request with the Twingate identity, the method and URL,
 the request headers as sent by the client (unredacted) and the response status
-and headers. Headers the Gateway injects are not logged, so the Home Assistant
-token does not appear. Clients should not send credentials of their own.
+and headers. Headers the Gateway injects, including the Twingate token for the
+proxy, are not logged. Clients should not send credentials of their own.
 Anyone who can read the add-on log, or the `audit.log` file when
 `audit_log: file` is set, can read these entries. The copy of the newest
 entries that the add-on keeps for the Web UI's relay with
@@ -784,16 +1481,25 @@ entries that the add-on keeps for the Web UI's relay with
 `s6-log`'s user and the relay's user. The Web UI shows only a summary of
 each entry, without headers or query string and with webhook IDs masked.
 
+The proxy logs one line per request and per WebSocket command with the
+Twingate username, the access level, the method and path (without the query
+string, webhook IDs masked) and the outcome (for a refused request, the
+toggle it needs), and a summary when a WebSocket connection closes. It never logs headers, tokens or message contents.
+
 ### Network exposure
 
 - Port 8443 is reachable on your LAN. The Gateway proxies only connections
   that present a valid Twingate access token; the only request it serves
   without one is its `/healthz` health check, which returns an empty
   response.
+- The proxy's port 8124 is not published by default. Home Assistant and
+  other add-ons on Home Assistant's internal network can reach it, and get
+  `401 Unauthorized` without a valid Twingate token for this Resource. If you
+  publish it, the same holds for your whole LAN.
 - The Gateway's only outbound connection is to `https://<network>.twingate.com`
-  to fetch Twingate's public signing keys; the Web UI checks the same address
-  every 15 minutes, or every 2 minutes while the check fails. Audit logs stay
-  on the Home Assistant host.
+  to fetch Twingate's public signing keys; the proxy fetches the same keys,
+  and the Web UI checks the same address every 15 minutes, or every 2 minutes
+  while the check fails. Audit logs stay on the Home Assistant host.
 - Once a day the Web UI reads the public list of image tags of the Gateway
   from `https://hub.docker.com`, with nothing about your installation (see
   [Gateway updates](#gateway-updates)).
@@ -802,13 +1508,15 @@ each entry, without headers or query string and with webhook IDs masked.
   ingress proxy.
 - The add-on does not change direct access to Home Assistant on your LAN.
 - No reverse proxy or trusted proxy settings are needed in Home Assistant:
-  the Gateway does not send an `X-Forwarded-For` header.
+  the proxy talks to Home Assistant through the Supervisor, and the Gateway
+  does not send an `X-Forwarded-For` header.
 
 ### Secrets at rest
 
-The token is stored in the add-on options and the CA private key in the
-add-on's data folder. Both are included in Home Assistant backups of the
-add-on, so protect your backups.
+With the API proxy, no Home Assistant token is stored anywhere. In the
+request header setup, the token is stored in the add-on options. The CA
+private key is in the add-on's data folder. Both are included in Home
+Assistant backups of the add-on, so protect your backups.
 
 ## Troubleshooting
 
@@ -827,8 +1535,11 @@ If the log shows:
 WARNING: Creating a new CA. Register the new CA certificate shown below in Twingate; Clients will not trust this Gateway until you do.
 ```
 
-or you reinstalled the add-on, Twingate still has the old CA and Twingate
-Clients reject the Gateway's certificate. The Gateway log then shows
+or you reinstalled the add-on (or installed it from another repository URL;
+see
+[Moving to another repository URL or reinstalling](#moving-to-another-repository-url-or-reinstalling)),
+Twingate still has the old CA and Twingate Clients reject the Gateway's
+certificate. The Gateway log then shows
 `failed to perform TLS handshake` errors, and the Web UI counts them under
 **Rejected before a request**. Copy the new certificate from the Web UI (or
 from the log) into `ca.pem` and register it:
@@ -864,21 +1575,84 @@ Gateway has no certificate for it unless the address is listed in
 The Connector cannot reach the Gateway. Check that:
 
 - The add-on is running.
-- The Gateway address in Twingate is `<home-assistant-ip>:<host port>` and
-  matches the host port in the add-on's **Network** section.
+- The Gateway address in Twingate is the one under **Setup** in the Web UI,
+  `<add-on-host>:8443` with the add-on's current host name (see
+  [The add-on's host name](#the-add-ons-host-name) and
+  [A mistyped add-on host name](#a-mistyped-add-on-host-name)), and the
+  Connector is the Twingate Connector add-on on the same Home Assistant.
+- For a Connector on another machine: the Gateway address is
+  `<home-assistant-ip>:<host port>` and matches the host port in the
+  add-on's **Network** section.
 - The Gateway and the Resource are in the Remote Network of the Connector
   add-on, and the Connector is online.
 
+### A mistyped add-on host name
+
+Home Assistant resolves every name under `local.hass.io` that is not the
+name of an add-on to the host's internal address. A Gateway address with a
+mistyped add-on host name therefore still works while port `8443` is
+published on the host, and stops working when the port is no longer
+published. A Resource address with a mistyped host name does not work: the
+proxy accepts only tokens for its own host name. Compare both addresses in
+Twingate with the ones under **Setup** in the Web UI, character by
+character.
+
+### `401 Unauthorized` from the proxy
+
+The proxy refused the caller's Twingate token. The add-on log says why, for
+example:
+
+```text
+Proxy: refused a request from 172.30.33.5 without a valid Twingate token for this proxy: the token is for Resource address '192.168.1.10' with upstream port 8124, not this proxy. Answered 401.
+```
+
+Check that the Resource's address is the add-on's host name shown in the Web
+UI and its upstream port is `8124`, or, with the host's IP address, that
+`8124/tcp` is published and the Resource uses that host port. Check that the
+Resource's upstream TLS mode is none, and that it has no per-Resource header
+rewrite for `X-Twingate-Gateway-Token`. When the log says
+`signing keys not available`, the add-on cannot reach
+`https://<network>.twingate.com`.
+
+### `403 Forbidden` from the proxy
+
+The request is outside the access level set with the toggles. The answer
+names the toggle that would allow it, for example
+`Forbidden: this request needs 'Allow reading' in the Twingate Gateway add-on.`,
+and so does the add-on log, which shows the access level in brackets:
+`Proxy: bob@example.com [mcp] GET /api/states -> 403 (denied) in 1 ms; needs 'Allow reading'`.
+Turn that toggle on in the add-on's **Configuration** tab and restart the
+add-on, keeping in mind that it then applies to everyone with access to the
+Resource. If the log at start says
+`API access for every caller of the Resource: none`, all three toggles are
+off. `Forbidden: blocked by the Twingate Gateway add-on for every caller.`
+(`blocked for every caller` in the log) means the request is
+[always blocked](#always-blocked), or came from a web page of another site
+(see [Web pages of other sites](#web-pages-of-other-sites)).
+
+### WebSocket clients get `auth_invalid`
+
+Send an `auth` message with a non-empty `access_token`, for example
+`{"type": "auth", "access_token": "twingate"}`, within 10 seconds of
+`auth_required`. The message `Home Assistant cannot be reached through the
+Supervisor` means the Supervisor refused the add-on; restart the add-on.
+
 ### `502 Bad Gateway`
 
-The Gateway cannot reach Home Assistant. The add-on log shows a
-`proxy error`, for example with `connection refused`. Check that the
-Resource address is the Home Assistant host's LAN IP and that the upstream
-port is the port Home Assistant answers on: `8123` on most installations, or
-`80`, the Home Assistant OS default from 2026.8. If Home Assistant serves
-HTTPS itself, see **Upstream TLS** in step 3.
+The Gateway cannot reach the upstream, or the proxy cannot reach Home
+Assistant through the Supervisor. The add-on log shows a `proxy error` from
+the Gateway, for example with `connection refused`, or a `-> 502` line from
+the proxy. With the API proxy, check that the Resource's address and upstream
+port are the ones shown in the Web UI (**Setup**), character by character
+(see [A mistyped add-on host name](#a-mistyped-add-on-host-name)), and that
+the proxy is running (Web UI, **API proxy** tile). In the request header
+setup, check that the Resource address is the Home Assistant host's LAN IP
+and that the upstream port is the port Home Assistant answers on: `8123` on
+most installations, or `80`, the Home Assistant OS default from 2026.8. If
+Home Assistant serves HTTPS itself, see **Upstream TLS** in the request
+header setup.
 
-### `401 Unauthorized` from Home Assistant
+### `401 Unauthorized` from Home Assistant (request header setup)
 
 Home Assistant rejected the token. Check that:
 
@@ -892,11 +1666,16 @@ Home Assistant rejected the token. Check that:
 
 ### MCP client gets `403 Forbidden` or `401 Unauthorized`
 
-- `403`: the token's user is not an administrator, and the endpoint requires
-  one. That is the default for `/api/mcp`, and always the case when it
-  exposes the **Home Assistant** set of AI tools. Use an administrator's
-  token, change the main URL settings as in step 7, or use `/api/mcp/assist`.
-- `401`: the token is wrong; see the previous section.
+- With the API proxy, `403`: **Allow MCP** is off (reading does not include
+  MCP), or the client used `/api/mcp/<id>`, which needs
+  **Allow changes (write)**; the message names the toggle. `400`: the
+  client did not send `Content-Type: application/json` in UTF-8.
+- In the request header setup, `403`: the token's user is not an
+  administrator, and the endpoint requires one. That is the default for
+  `/api/mcp`, and always the case when it exposes the **Home Assistant** set
+  of AI tools. Use an administrator's token, change the main URL settings as
+  in step 7, or use `/api/mcp/assist`.
+- `401`: see the sections above.
 - `404`: the Model Context Protocol integration is not enabled.
 
 ### The add-on stops with "Twingate network ... not found"
@@ -926,7 +1705,8 @@ harmless.
 
 ### Long-running connections drop
 
-The Gateway closes each connection when its Twingate access token expires.
+The Gateway closes each connection when its Twingate access token expires,
+and the proxy closes WebSocket connections and streams at the same moment.
 WebSocket connections and other long-lived streams are therefore dropped
 periodically. Clients must reconnect.
 

@@ -17,7 +17,11 @@ comes from:
 - a request to the Twingate signing-key URL that the Gateway fetches its
   keys from: every 15 minutes, or every 2 minutes while it fails;
 - Docker Hub's list of the tags of twingate/gateway, read once a day, which
-  says which Gateway release a rebuild of the add-on would install.
+  says which Gateway release a rebuild of the add-on would install;
+- the Home Assistant API proxy (supervisor_proxy.py), which sends its state
+  and summaries of the newest proxied requests (Twingate user, request,
+  decision; no query strings, webhook IDs masked, no tokens) over a second
+  Unix socket, at least every 5 seconds. They are kept in memory only.
 
 The process runs as an unprivileged user with an empty environment.
 Python standard library only.
@@ -48,6 +52,7 @@ import ingress_server
 WWW_DIR = "/usr/share/twingate-gateway-ui"
 STATUS_FILE = "/run/twingate-gateway/status.json"
 AUDIT_SOCKET = "/run/twingate-gateway-ui/audit.sock"
+PROXY_SOCKET = "/run/twingate-gateway-proxy-ui/proxy.sock"
 METRICS_URL = "http://127.0.0.1:9090/metrics"
 GATEWAY_ADDRESS = ("127.0.0.1", 8443)
 DEFAULT_PORT = 8100
@@ -76,7 +81,14 @@ _REQUEST_ID = re.compile(r"[0-9A-Za-z.-]{1,64}")
 _METHOD = re.compile(r"[A-Z]{1,16}|\?")
 _VERSION = re.compile(r"[0-9A-Za-z.+-]{1,32}")
 _SLUG = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+_HOSTNAME = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*")
 _HOSTED_NETWORK = ipaddress.ip_network("172.30.32.0/23")
+_PROXY_METHOD = re.compile(r"[A-Z]{1,16}|\?")
+_PROXY_DECISIONS = ("read", "mcp", "write", "denied", "blocked", "invalid", "unauthenticated", "limited", "error", "closed")
+_PROXY_KINDS = ("http", "ws", "ws-cmd")
+_PROXY_COUNTS = ("requests", "allowed", "denied", "blocked", "unauthenticated", "invalid", "limited", "errors")
+# The three toggles of the API proxy's access level.
+_PROXY_ACCESS = ("read", "mcp", "write")
 
 # The release check. The Dockerfile takes the Gateway from the image tag
 # twingate/gateway:<major> on Docker Hub. Docker Hub's tag list (one page of
@@ -191,7 +203,7 @@ def load_startup_status() -> dict | None:
         static_certificate = {"not_after": not_after, "not_after_epoch": _iso_epoch(not_after)}
 
     host_port = raw.get("host_port")
-    if not (isinstance(host_port, int) and not isinstance(host_port, bool) and 0 < host_port < 65536):
+    if not _valid_port(host_port):
         host_port = None
 
     return {
@@ -216,6 +228,28 @@ def load_startup_status() -> dict | None:
         "host_port_state": raw.get("host_port_state") if raw.get("host_port_state") in ("mapped", "not_mapped", "unknown") else "unknown",
         "ca": _clean_certificate(raw.get("ca")),
         "static_certificate": static_certificate,
+        "proxy": _clean_proxy_settings(raw.get("proxy")),
+    }
+
+
+def _valid_port(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 0 < value < 65536
+
+
+def _clean_proxy_settings(raw: object) -> dict | None:
+    """The proxy part of the status file: how to reach it and its access level."""
+    if not isinstance(raw, dict):
+        return None
+    access = raw.get("access") if isinstance(raw.get("access"), dict) else {}
+    return {
+        "port": raw.get("port") if _valid_port(raw.get("port")) else 8124,
+        "host_port": raw.get("host_port") if _valid_port(raw.get("host_port")) else None,
+        "host_port_state": raw.get("host_port_state") if raw.get("host_port_state") in ("mapped", "not_mapped", "unknown") else "unknown",
+        "hostname": _match(_HOSTNAME, raw.get("hostname")),
+        "dns_name": _match(_HOSTNAME, raw.get("dns_name")),
+        "token_header": _match(_HEADER_NAME, raw.get("token_header")),
+        # As the proxy reads them: anything but true is off.
+        "access": {key: access.get(key) is True for key in _PROXY_ACCESS},
     }
 
 
@@ -521,6 +555,119 @@ class AuditStore:
                 # Seconds without a message from the relay, counted from the
                 # start of the Web UI until the first one arrives.
                 "relay_silent_seconds": round(now - (self._started if last is None else last), 1),
+                "socket_error": self._socket_error,
+            }
+
+
+# ----------------------------------------------------------------------------
+# The Home Assistant API proxy
+# ----------------------------------------------------------------------------
+
+
+def _clean_proxy_record(raw: object) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    record_id = _match(_REQUEST_ID, raw.get("id"))
+    when = _number(raw.get("t"))
+    if record_id is None or when is None:
+        return None
+    status = raw.get("status")
+    duration = _number(raw.get("ms"))
+    method = raw.get("method")
+    return {
+        "id": record_id,
+        "t": when,
+        "kind": raw.get("kind") if raw.get("kind") in _PROXY_KINDS else "http",
+        "user": _text(raw.get("user"), 200) or "",
+        "method": method if method == "WS" or _match(_PROXY_METHOD, method) else "?",
+        "path": _text(raw.get("path"), 600) or "",
+        "q": raw.get("q") is True,
+        "status": status if isinstance(status, int) and not isinstance(status, bool) and 0 <= status <= 999 else 0,
+        "ms": duration if duration is not None and duration >= 0 else None,
+        "decision": raw.get("decision") if raw.get("decision") in _PROXY_DECISIONS else "error",
+        "detail": _text(raw.get("detail"), 120),
+    }
+
+
+class ProxyStore:
+    """Receives the API proxy's state and newest requests; keeps the last snapshot in memory."""
+
+    def __init__(self, path: str = PROXY_SOCKET) -> None:
+        self._path = path
+        self._lock = threading.Lock()
+        self._state: dict = {}
+        self._records: list[dict] = []
+        self._last_message: float | None = None
+        self._started = time.monotonic()
+        self._socket_error: str | None = None
+
+    def start(self) -> None:
+        threading.Thread(target=self._run, name="proxy", daemon=True).start()
+
+    def _run(self) -> None:
+        while True:
+            try:
+                self._receive()
+            except OSError as error:
+                with self._lock:
+                    self._socket_error = type(error).__name__
+                time.sleep(2.0)
+
+    def _receive(self) -> None:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(self._path)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+            sock.bind(self._path)
+            # The proxy runs as api-proxy, in the group the socket gets from
+            # its directory (see the twingate-gateway-ui service).
+            os.chmod(self._path, 0o660)
+            with self._lock:
+                self._socket_error = None
+            while True:
+                data = sock.recv(256 * 1024)
+                with contextlib.suppress(Exception):
+                    self._handle(data)
+
+    def _handle(self, data: bytes) -> None:
+        try:
+            message = json.loads(data)
+        except (ValueError, RecursionError):
+            return
+        if not isinstance(message, dict) or message.get("type") != "snapshot":
+            return
+        proxy = message.get("proxy") if isinstance(message.get("proxy"), dict) else {}
+        records = message.get("records")
+        cleaned = [record for record in map(_clean_proxy_record, records[-MAX_RECORDS:] if isinstance(records, list) else []) if record]
+        keys = proxy.get("keys") if isinstance(proxy.get("keys"), dict) else {}
+        counts = proxy.get("counts") if isinstance(proxy.get("counts"), dict) else {}
+        state = {
+            "state": _text(proxy.get("state"), 40),
+            "started_at": _number(proxy.get("started_at")),
+            "token": proxy.get("token") is True,
+            "websockets": int(_number(proxy.get("websockets")) or 0),
+            "keys": {
+                "ok": keys.get("ok") is True,
+                "keys": int(_number(keys.get("keys")) or 0),
+                "checked_at": _number(keys.get("checked_at")),
+                "error": _text(keys.get("error"), 80),
+            },
+            "counts": {name: int(_number(counts.get(name)) or 0) for name in _PROXY_COUNTS},
+        }
+        with self._lock:
+            self._state = state
+            self._records = sorted(cleaned, key=lambda item: item["t"], reverse=True)
+            self._last_message = time.monotonic()
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            now = time.monotonic()
+            last = self._last_message
+            return {
+                **self._state,
+                "records": list(self._records),
+                "reporting": last is not None and now - last < AUDIT_STALE_SECONDS,
+                "seen": last is not None,
+                "silent_seconds": round(now - (self._started if last is None else last), 1),
                 "socket_error": self._socket_error,
             }
 
@@ -948,8 +1095,9 @@ def host_hint(headers) -> str | None:
     """The IPv4 address the browser used to open Home Assistant, if it used one.
 
     Home Assistant forwards the browser's Host header as X-Forwarded-Host. It
-    is only a hint for the Gateway address: Home Assistant may be reached
-    through another address than the host's LAN address.
+    is only a hint for the Gateway address with the host's LAN IP address,
+    for a Connector elsewhere: Home Assistant may be reached through another
+    address than the host's LAN address.
     """
     value = headers.get("X-Forwarded-Host") if headers is not None else None
     if not isinstance(value, str):
@@ -970,10 +1118,11 @@ def host_hint(headers) -> str | None:
 
 
 class StatusBuilder:
-    def __init__(self, audit: AuditStore, signing_keys: SigningKeyCheck, updates: GatewayUpdateCheck) -> None:
+    def __init__(self, audit: AuditStore, signing_keys: SigningKeyCheck, updates: GatewayUpdateCheck, proxy: ProxyStore | None = None) -> None:
         self.audit = audit
         self.signing_keys = signing_keys
         self.updates = updates
+        self.proxy = proxy
         self._lock = threading.Lock()
         self._live: dict | None = None
         self._live_at = 0.0
@@ -1069,6 +1218,9 @@ class StatusBuilder:
                 "socket_error": audit["socket_error"],
                 "records": audit["records"],
             },
+            # The API proxy's last report; "reporting" is false while it has
+            # been silent for 15 seconds (it reports every 5).
+            "proxy": self.proxy.snapshot() if self.proxy else None,
         }
 
 
@@ -1125,6 +1277,36 @@ def self_check() -> int:
     if is_docker_hub_url("https://hub.docker.com.example/v2/") or not is_docker_hub_url(GATEWAY_TAGS_URL, GATEWAY_TAGS_PATH):
         print("self check failed: Docker Hub address", file=sys.stderr)
         return 1
+    proxy = ProxyStore("/nonexistent/proxy.sock")
+    proxy._handle(  # noqa: SLF001 - the receiver without its socket
+        json.dumps(
+            {
+                "type": "snapshot",
+                "proxy": {"state": "running", "keys": {"ok": True, "keys": 1}, "counts": {"requests": 2, "denied": 1}},
+                "records": [
+                    {"id": "p1-1", "t": 1.0, "user": "<b>x</b>", "method": "GET", "path": "/api/states", "status": 200, "decision": "write"},
+                    {"id": "not an id!", "t": 2.0},
+                    {"id": "p1-2", "t": 3.0, "grant": "root", "method": "<x>", "decision": "allowed-everything"},
+                ],
+            }
+        ).encode()
+    )
+    snapshot = proxy.snapshot()
+    settings = _clean_proxy_settings({"port": 8124, "host_port": True, "hostname": "Bad Name", "access": {"read": True, "mcp": "true", "full": True}})
+    if (
+        snapshot["state"] != "running"
+        or [record["id"] for record in snapshot["records"]] != ["p1-2", "p1-1"]
+        or "grant" in snapshot["records"][0]
+        or snapshot["records"][0]["method"] != "?"
+        or snapshot["records"][0]["decision"] != "error"
+        or snapshot["records"][1]["decision"] != "write"
+        or not snapshot["reporting"]
+        or settings["host_port"] is not None
+        or settings["hostname"] is not None
+        or settings["access"] != {"read": True, "mcp": False, "write": False}
+    ):
+        print(f"self check failed: proxy summaries {snapshot} {settings}", file=sys.stderr)
+        return 1
     print("gateway_ui: ok")
     return 0
 
@@ -1141,7 +1323,9 @@ def main(argv: list[str]) -> int:
     signing_keys.start()
     updates = GatewayUpdateCheck(audit)
     updates.start()
-    ingress_server.serve(port, build_app(StatusBuilder(audit, signing_keys, updates)))
+    proxy = ProxyStore()
+    proxy.start()
+    ingress_server.serve(port, build_app(StatusBuilder(audit, signing_keys, updates, proxy)))
     return 0
 
 

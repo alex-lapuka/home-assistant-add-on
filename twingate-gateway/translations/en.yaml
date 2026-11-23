@@ -9,19 +9,39 @@ configuration:
     name: Log level
     description: >-
       Level of the Gateway's system log. It does not change the audit log.
+  allow_read:
+    name: Allow reading
+    description: >-
+      Everyone with access to the API proxy's Resource in Twingate may read
+      Home Assistant over REST and WebSocket (states, registries, history),
+      without acting or rendering templates.
+  allow_mcp:
+    name: Allow MCP
+    description: >-
+      Everyone with access to the Resource may use the MCP endpoint /api/mcp;
+      what it can do is set in Home Assistant's MCP Server settings (by
+      default any action on any entity).
+  allow_write:
+    name: Allow changes (write)
+    description: >-
+      Everyone with access to the Resource may use the whole API, reading and
+      MCP included, except routes into the Supervisor, accounts, tokens and
+      backups; not a security boundary.
   request_headers:
     name: Request headers
     description: >-
-      HTTP headers that the Gateway adds to every request it forwards, for
-      every Web App Resource that uses this Gateway. A header with the same
-      name sent by the client is replaced. For Home Assistant, add the name
+      Optional, for the setup without the API proxy. HTTP headers that the
+      Gateway adds to every request it forwards, for every Web App Resource
+      that uses this Gateway. A header with the same name sent by the client
+      is replaced. For Home Assistant on port 8123, add the name
       Authorization with the value Bearer, a space and a long-lived access
       token. Values are never logged.
     fields:
       name:
         name: Header name
         description: >-
-          The HTTP header name, for example Authorization.
+          The HTTP header name, for example Authorization. The add-on sets
+          X-Twingate-Gateway-Token itself.
       value:
         name: Header value
         description: >-
@@ -54,5 +74,12 @@ configuration:
 network:
   8443/tcp: >-
     Gateway TLS listener that the Twingate Connector forwards Web App
-    connections to. Register the Home Assistant IP address and this port as
-    the Gateway address in Twingate.
+    connections to. With the Twingate Connector add-on on this Home
+    Assistant, the Gateway address in Twingate is the add-on's host name and
+    port 8443 (shown in the Web UI). For a Connector elsewhere, register the
+    Home Assistant IP address and this port instead.
+  8124/tcp: >-
+    Home Assistant API proxy. Leave it empty when the Twingate Resource uses
+    the add-on's host name (recommended). Set a port only if the Resource
+    uses the Home Assistant host's IP address; the proxy is then reachable
+    from your LAN, with a Twingate token only.
