@@ -94,6 +94,11 @@
   sections you opened, long lists show the newest 10 entries with a
   "Show all" button, and the setup steps are shown until the first Twingate
   client connects.
+- The Web UI's Setup section, its next steps and the startup log give the
+  Gateway address with the add-on's host name
+  (`<host name>.local.hass.io:8443`), which the Twingate Connector add-on on
+  the same Home Assistant resolves; the host's LAN IP address remains the
+  alternative for a Connector elsewhere.
 - The proxy runs as its own unprivileged user (`api-proxy`), the only
   process besides root with the Supervisor token; s6 restarts it when it
   stops, and the Gateway, its logger and the Web UI do not depend on it.

@@ -80,8 +80,10 @@ configuration:
 network:
   8443/tcp: >-
     Gateway TLS listener that the Twingate Connector forwards Web App
-    connections to. Register the Home Assistant IP address and this port as
-    the Gateway address in Twingate.
+    connections to. With the Twingate Connector add-on on this Home
+    Assistant, the Gateway address in Twingate is the add-on's host name and
+    port 8443 (shown in the Web UI). For a Connector elsewhere, register the
+    Home Assistant IP address and this port instead.
   8124/tcp: >-
     Home Assistant API proxy. Leave it empty when the Twingate Resource uses
     the add-on's host name (recommended). Set a port only if the Resource

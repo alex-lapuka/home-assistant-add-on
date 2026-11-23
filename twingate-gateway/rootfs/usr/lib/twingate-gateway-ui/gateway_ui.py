@@ -1101,8 +1101,9 @@ def host_hint(headers) -> str | None:
     """The IPv4 address the browser used to open Home Assistant, if it used one.
 
     Home Assistant forwards the browser's Host header as X-Forwarded-Host. It
-    is only a hint for the Gateway address: Home Assistant may be reached
-    through another address than the host's LAN address.
+    is only a hint for the Gateway address with the host's LAN IP address,
+    for a Connector elsewhere: Home Assistant may be reached through another
+    address than the host's LAN address.
     """
     value = headers.get("X-Forwarded-Host") if headers is not None else None
     if not isinstance(value, str):

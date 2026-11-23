@@ -663,10 +663,13 @@
     return `https://${name}.twingate.com/`;
   }
 
+  // The Gateway address for the Twingate Connector add-on on this Home
+  // Assistant: the add-on's host name, as in the API proxy's Resource address,
+  // and the Gateway's own port.
   function gatewayAddress(data) {
     const startup = data.startup || {};
-    const port = startup.host_port || startup.gateway_port || 8443;
-    return `${data.host_hint || '<home-assistant-ip>'}:${port}`;
+    const settings = startup.proxy || {};
+    return `${settings.dns_name || '<add-on host name>.local.hass.io'}:${startup.gateway_port || 8443}`;
   }
 
   // --------------------------------------------------------------------------
@@ -695,14 +698,15 @@
 
   // Shown until the first Twingate client has authenticated.
   function renderNextSteps(data, authenticated) {
-    render('next-steps', [data.ready && !authenticated], () => {
+    const address = gatewayAddress(data);
+    render('next-steps', [data.ready && !authenticated, address], () => {
       if (!data.ready || authenticated) {
         return [];
       }
       return callout('info', 'Next steps',
         el('ol', 'tg-list',
           el('li', null, 'Register the CA certificate (under Setup) in Twingate as an X.509 certificate authority.'),
-          el('li', null, 'Create a Gateway with the Gateway address, in the Remote Network of your Connector, using that CA.'),
+          el('li', null, 'Create a Gateway with the Gateway address ', code(address), ' (see Setup), in the Remote Network of your Connector, using that CA.'),
           el('li', null, 'Create a Web App Resource on that Gateway with the API proxy address and upstream port.')),
         el('p', null, 'Step by step, with Terraform or curl: the add-on\'s Documentation tab.'));
     });
@@ -1002,15 +1006,21 @@
       if (!data.ready) {
         return el('p', 'tg-empty', `${NOT_STARTED}.`);
       }
+      // A Connector that does not run on this Home Assistant cannot resolve
+      // the add-on's host name; it needs the host's LAN IP address and the
+      // host port, which the add-on cannot see (host_hint is only a hint).
       const port = startup.host_port || startup.gateway_port || 8443;
+      const lanAddress = code(`${data.host_hint || '<home-assistant-ip>'}:${port}`);
+      const sameHost = 'With the Twingate Connector add-on on this Home Assistant. For a Connector elsewhere, use ';
       let addressHelp;
       if (startup.host_port_state === 'not_mapped') {
         addressHelp = callout('warning', 'Port not published',
           el('p', null, `Container port ${startup.gateway_port}/tcp has no host port. Set one in the add-on's Network section, then restart the add-on.`));
       } else if (data.host_hint) {
-        addressHelp = muted(`Based on the address you opened Home Assistant with; if the host has another LAN IP address, use that with port ${port}.`);
+        addressHelp = muted(sameHost, 'the host\'s LAN IP address, for example ', lanAddress, ' (the address you opened Home Assistant with).');
       } else {
-        addressHelp = muted(`Replace <home-assistant-ip> with the host's LAN IP address (Settings > System > Network).${startup.host_port_state === 'unknown' ? ' The port is the host port set for 8443/tcp in the Network section.' : ''}`);
+        addressHelp = muted(sameHost, lanAddress, ' with the host\'s LAN IP address (Settings > System > Network).',
+          startup.host_port_state === 'unknown' ? ' The port is the host port set for 8443/tcp in the Network section.' : null);
       }
       let resource = muted('Not available. The add-on\'s Log tab shows why.');
       if (settings) {
