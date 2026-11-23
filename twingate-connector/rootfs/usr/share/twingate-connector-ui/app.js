@@ -3,15 +3,189 @@
 // Polls api/status (a relative URL, so it works under the Home Assistant
 // ingress path) and renders it. All values are inserted as text nodes, never
 // as HTML: log lines, user names and Resource addresses come from outside.
+//
+// The top of the page (summary tiles and notices that need action) is always
+// visible; everything else is in collapsible sections (createSections).
 'use strict';
 
 (() => {
   const REFRESH_MS = 5000;
   const STATUS_URL = 'api/status';
+  const SECTIONS_KEY = 'twingate-connector:sections';
+  const LIST_LIMIT = 10;
   const signatures = new Map();
   let failures = 0;
   let timer = null;
   let inFlight = false;
+  let lastData = null;
+
+  // --------------------------------------------------------------------------
+  // Collapsible sections. The same helper is used by the Twingate Gateway
+  // add-on's page; keep the two copies identical.
+  //
+  // Markup: see "Collapsible sections" in twingate-docs-theme.css. Each
+  // <details class="tg-details" data-section="NAME"> is created once, in
+  // index.html; the page only updates what is inside it.
+  //
+  // sections.update(NAME, { digest, level, badge, open }) sets the summary
+  // line in place:
+  //   digest  one line of text, the section's essential fact
+  //   level   0 normal, 1 warning, 2 error
+  //   badge   short text for a pill next to the title (warning or danger
+  //           colour by level), or '' for none
+  //   open    whether the section is open by default, or null while that is
+  //           not known yet
+  // A section the user has not opened or closed starts as `open`, or open
+  // when its level is above 0. The user's choice is kept per section in
+  // localStorage (if available) with the level at that moment, and a refresh
+  // never changes it, with one exception: a section opens by itself when its
+  // level rises above every level it had since the page loaded or since the
+  // user's choice. It never closes by itself.
+  //
+  // sections.rows(NAME, total, limit) returns how many rows of a list to show
+  // (limit, or total after the user selected "Show all") and updates the
+  // section's tg-showall button. When the user selects it, onChange() is
+  // called to render the list again; include the returned number in the
+  // list's render key.
+  // --------------------------------------------------------------------------
+
+  function createSections(storageKey, onChange) {
+    let saved = {};
+    try {
+      const value = JSON.parse(window.localStorage.getItem(storageKey) || '{}');
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        saved = value;
+      }
+    } catch (error) {
+      saved = {};
+    }
+
+    function persist() {
+      try {
+        window.localStorage.setItem(storageKey, JSON.stringify(saved));
+      } catch (error) {
+        // Not available (blocked or private browsing): kept until the page reloads.
+      }
+    }
+
+    function choiceOf(name) {
+      const choice = saved[name];
+      return choice && typeof choice === 'object' ? choice : {};
+    }
+
+    function remember(name, values) {
+      saved[name] = Object.assign({}, choiceOf(name), values);
+      persist();
+    }
+
+    function setText(node, text) {
+      if (node && node.textContent !== text) {
+        node.textContent = text;
+      }
+    }
+
+    function setOpen(section, open) {
+      section.expected = open;
+      if (section.details.open !== open) {
+        section.details.open = open;
+      }
+    }
+
+    const sections = new Map();
+    for (const details of document.querySelectorAll('details.tg-details[data-section]')) {
+      const name = details.dataset.section;
+      const choice = choiceOf(name);
+      const section = {
+        details,
+        badge: details.querySelector('.tg-details__badge'),
+        digest: details.querySelector('.tg-details__digest'),
+        button: details.querySelector('.tg-showall__button'),
+        expected: details.open,
+        chosen: typeof choice.open === 'boolean',
+        ready: false,
+        level: 0,
+        seen: 0,
+        badgeKey: '',
+        all: choice.all === true,
+      };
+      sections.set(name, section);
+      if (section.chosen) {
+        setOpen(section, choice.open);
+      }
+      // The toggle event also follows the page's own changes (setOpen);
+      // only a state that differs from the expected one is the user's.
+      details.addEventListener('toggle', () => {
+        if (details.open === section.expected) {
+          return;
+        }
+        section.expected = details.open;
+        section.ready = true;
+        section.chosen = true;
+        section.seen = Math.max(section.seen, section.level);
+        remember(name, { open: details.open, level: section.seen });
+      });
+      if (section.button) {
+        section.button.addEventListener('click', () => {
+          section.all = !section.all;
+          remember(name, { all: section.all });
+          onChange();
+          if (!section.all) {
+            section.button.scrollIntoView({ block: 'nearest' });
+          }
+        });
+      }
+    }
+
+    function update(name, { digest = '', level = 0, badge = '', open = null } = {}) {
+      const section = sections.get(name);
+      if (!section) {
+        return;
+      }
+      setText(section.digest, digest);
+      const badgeKey = badge ? `${level}|${badge}` : '';
+      if (badgeKey !== section.badgeKey) {
+        section.badgeKey = badgeKey;
+        if (badge) {
+          const pill = document.createElement('span');
+          pill.className = `tg-pill tg-pill--${level >= 2 ? 'danger' : level === 1 ? 'warning' : 'neutral'}`;
+          pill.textContent = badge;
+          section.badge.replaceChildren(pill);
+        } else {
+          section.badge.replaceChildren();
+        }
+      }
+      section.level = level;
+      if (!section.ready && (section.chosen || open !== null)) {
+        section.ready = true;
+        const opened = section.chosen
+          ? level > (Number(choiceOf(name).level) || 0)
+          : open || level > 0;
+        setOpen(section, section.details.open || opened);
+        section.seen = Math.max(section.seen, level);
+      } else if (level > section.seen) {
+        section.seen = level;
+        setOpen(section, true);
+      }
+    }
+
+    function rows(name, total, limit) {
+      const section = sections.get(name);
+      if (!section || !section.button) {
+        return total;
+      }
+      const row = section.button.parentElement;
+      if (total <= limit) {
+        row.hidden = true;
+        return total;
+      }
+      row.hidden = false;
+      setText(section.button, section.all ? `Show newest ${limit}` : `Show all ${total}`);
+      section.button.setAttribute('aria-expanded', String(section.all));
+      return section.all ? total : limit;
+    }
+
+    return { update, rows };
+  }
 
   // --------------------------------------------------------------------------
   // DOM helpers
@@ -37,6 +211,10 @@
 
   function muted(...children) {
     return el('div', 'tg-muted tg-small', ...children);
+  }
+
+  function note(...children) {
+    return el('p', 'tg-muted tg-small', ...children);
   }
 
   function pill(kind, label) {
@@ -126,7 +304,7 @@
     return el('span', 'tg-bar', fill);
   }
 
-  // Re-renders a section only when its data changed, so that a text
+  // Re-renders an element only when its data changed, so that a text
   // selection is not reset by every refresh.
   function render(id, key, build) {
     const signature = JSON.stringify(key);
@@ -146,6 +324,17 @@
 
   function num(value) {
     return value === null || value === undefined ? '–' : numberFormat.format(value);
+  }
+
+  // "1 user", "3 users"
+  function count(value, noun) {
+    return `${num(value)} ${noun}${value === 1 ? '' : 's'}`;
+  }
+
+  // "a", "a and b", "a, b and c"
+  function listing(parts) {
+    const items = parts.filter(Boolean);
+    return items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
   }
 
   function dateTime(epoch) {
@@ -228,25 +417,18 @@
   // Connector state
   // --------------------------------------------------------------------------
 
-  const STATES = {
-    Online: ['success', 'The Connector reports that it is connected to Twingate.'],
-    Authentication: ['info', 'The Connector is signing in to Twingate with its access and refresh tokens.'],
-    Offline: ['warning', 'The Connector is not connected to Twingate. It retries on its own.'],
-    Error: ['danger', 'The Connector ran into an error, for example with its tokens, the network name or the connection to Twingate. It retries on its own.'],
+  const STATE_KINDS = {
+    Online: 'success',
+    Authentication: 'info',
+    Offline: 'warning',
+    Error: 'danger',
   };
 
   function statePill(state) {
     if (!state) {
       return pill('neutral', 'Unknown');
     }
-    return pill((STATES[state] || ['neutral'])[0], state);
-  }
-
-  function stateText(state) {
-    if (!state) {
-      return 'The Connector has not reported a state yet. It prints its state when it starts and whenever the state changes.';
-    }
-    return (STATES[state] || [null, `The Connector reports the state ${state}.`])[1];
+    return pill(STATE_KINDS[state] || 'neutral', state);
   }
 
   const PROCESS = {
@@ -275,54 +457,65 @@
     return `https://${name}.twingate.com/`;
   }
 
-  function notOnlineHelp(state) {
+  // In Error, or cycling through the other states without ever having been
+  // online: the tokens or the network name are usually the cause.
+  function notOnline(state) {
     if (!state.current || state.current === 'Online') {
-      return null;
+      return false;
     }
-    if (state.current !== 'Error' && (state.last_online_at || state.changes < 6)) {
-      return null;
-    }
-    return callout('warning', state.last_online_at ? 'The Connector is not online' : 'The Connector has not come online since the add-on started',
-      el('p', null, 'If it keeps cycling through Offline, Authentication and Error, the tokens or the network name are usually wrong, or the tokens were revoked. Generate new tokens for this Connector in the Admin Console, enter them in the add-on\'s Configuration tab and restart the add-on.'),
-      el('p', null, 'The warnings below and the add-on\'s Log tab show the Connector\'s own reason.'));
+    return state.current === 'Error' || (!state.last_online_at && state.changes >= 6);
   }
 
   // --------------------------------------------------------------------------
-  // Sections
+  // Top of the page: lead, notices that need action, summary tiles
   // --------------------------------------------------------------------------
+
+  function renderLead(data) {
+    const startup = data.startup || {};
+    render('lead', [startup.network], () => {
+      const url = adminConsole(startup.network);
+      return ['The Connector\'s own view. Twingate\'s view is in the ', url ? link(url, 'Admin Console') : 'Admin Console', '.'];
+    });
+  }
 
   function renderNotice(data) {
     const relay = data.relay || {};
     const process = data.process || {};
+    const state = data.state || {};
+    const startup = data.startup || {};
     const silent = data.ready && relay.expected && !relay.connected && !relay.pending;
+    const offline = data.ready && process.state !== 'stopped' && notOnline(state);
     render('notice', [data.ready, process.state, relay.expected, silent, silent ? Math.floor((relay.age_seconds || 0) / 15) : 0,
-      relay.socket_error, relay.source_error], () => {
+      relay.socket_error, relay.source_error, offline, offline && !!state.last_online_at, startup.network], () => {
       if (!data.ready) {
         return callout('warning', 'The Connector has not been started yet',
-          el('p', null, 'The add-on installs the Connector from Twingate\'s package repository at every start, which takes a moment. If this does not change, the add-on stopped because of a configuration problem; the add-on\'s Log tab shows why.'));
+          el('p', null, 'The add-on installs it at every start. If this stays, the add-on\'s Log tab shows why.'));
       }
       const nodes = [];
       if (process.state === 'starting') {
-        nodes.push(callout('info', 'Starting', el('p', null, 'The add-on is installing and starting the Connector.')));
+        nodes.push(callout('info', 'Starting the Connector'));
       } else if (process.state === 'stopped') {
         nodes.push(callout('danger', 'The Connector is not running',
-          el('p', null, 'The Connector process has exited. The add-on stops with it; the add-on\'s Log tab shows why.')));
+          el('p', null, 'Its process has exited and the add-on stops with it. The add-on\'s Log tab shows why.')));
+      }
+      if (offline) {
+        const url = adminConsole(startup.network);
+        nodes.push(callout('warning', state.last_online_at ? 'The Connector is not online' : 'The Connector has not come online since the add-on started',
+          el('p', null, 'If it keeps cycling through Offline, Authentication and Error, the tokens or the network name are wrong or the tokens were revoked: generate new tokens in the ',
+            url ? link(url, 'Admin Console') : 'Admin Console', ', enter them in the add-on\'s Configuration tab and restart the add-on.')));
       }
       if (!relay.expected) {
         nodes.push(callout('warning', 'The Connector log is not available here',
-          el('p', null, 'The Connector writes its log directly to the add-on log, so this page cannot show its state, warnings or connections. Restart the add-on.')));
+          el('p', null, 'This page cannot show its state, warnings or connections. Restart the add-on.')));
       } else if (relay.source_error) {
-        nodes.push(callout('warning', 'The state, warnings and connections below may be out of date',
-          el('p', null, `The log relay cannot read the copy of the Connector's log that the add-on keeps for this page (${relay.source_error}).`),
-          el('p', null, 'The Connector keeps running and its log still reaches the add-on\'s Log tab. If this stays, restart the add-on.')));
+        nodes.push(callout('warning', 'State, warnings and connections may be out of date',
+          el('p', null, `The log relay cannot read the copy of the Connector's log (${relay.source_error}). The Connector is not affected; restart the add-on if this stays.`)));
       } else if (silent) {
         const age = relay.age_seconds === null || relay.age_seconds === undefined
           ? 'has not reported since this page\'s server started'
           : `has not reported for ${duration(relay.age_seconds)}`;
-        nodes.push(callout('danger', 'The state, warnings and connections below may be out of date',
-          el('p', null, `The log relay, which reads the Connector's log for this page, ${age}.`,
-            relay.socket_error ? ` The page cannot receive its summaries (${relay.socket_error}).` : ' It is restarted automatically.'),
-          el('p', null, 'The Connector keeps running and its log still reaches the add-on\'s Log tab. If this stays, restart the add-on.')));
+        nodes.push(callout('danger', 'State, warnings and connections may be out of date',
+          el('p', null, `The log relay ${age}${relay.socket_error ? ` (${relay.socket_error})` : ''}. The Connector is not affected; restart the add-on if this stays.`)));
       }
       return nodes;
     });
@@ -343,195 +536,17 @@
         knownVersion(startup.connector_version) ? `Connector ${startup.connector_version}`
           : startup.connector_version ? 'Version unknown' : 'Version not known yet'),
       card('Resources', num(metrics.available ? metrics.resources : null),
-        metrics.available ? `${num(metrics.relay_regions)} relay ${metrics.relay_regions === 1 ? 'region' : 'regions'} connected` : 'Metrics unavailable'),
+        metrics.available ? `${count(metrics.relay_regions, 'relay region')} connected` : 'Metrics unavailable'),
       card('Uptime', duration(uptime), uptime !== null ? `Since ${dateTime(now - uptime)}` : null),
     ]);
   }
 
-  function renderScope(data) {
-    const startup = data.startup || {};
-    render('scope', [startup.network], () => {
-      const url = adminConsole(startup.network);
-      return callout('info', 'This page shows the Connector\'s own view',
-        el('p', null, 'Whether Twingate sees this Connector as online, and which Resources and users it serves, is shown in the Twingate Admin Console, in the Remote Network this Connector belongs to.'),
-        url ? el('p', null, link(url, `Open the Admin Console (${url.slice(8, -1)})`)) : null);
-    });
-  }
+  // --------------------------------------------------------------------------
+  // Sections
+  // --------------------------------------------------------------------------
 
-  function historyTable(history) {
-    const rows = history.slice(-10).reverse().map((entry) => [clockTime(entry.t), statePill(entry.state)]);
-    return table([{ label: 'Time', cellClass: 'tg-nowrap' }, { label: 'State' }], rows, 'tg-table--compact');
-  }
-
-  function renderStatus(data, now) {
-    const startup = data.startup || {};
-    const state = data.state || {};
-    const process = data.process || {};
-    render('status', [data.ready, state, process.state, process.started_at, startup.connector_version, startup.addon_version,
-      Math.floor(now / 60)], () => {
-      if (!data.ready) {
-        return el('p', 'tg-empty', 'Available when the Connector has started.');
-      }
-      const stateDetails = [el('div', null, statePill(state.current)), muted(stateText(state.current))];
-      if (state.since) {
-        stateDetails.push(muted(`Since ${since(state.since, now)}.`));
-      }
-      if (state.current === 'Online' && state.online_since) {
-        stateDetails.push(muted(`Online without interruption since ${clockTime(state.online_since)}.`));
-      } else if (state.last_online_at) {
-        stateDetails.push(muted(`Last online at ${dateTime(state.last_online_at)}.`));
-      } else if (state.current) {
-        stateDetails.push(muted('Not online since the add-on started.'));
-      }
-      if (state.changes) {
-        stateDetails.push(muted(`${num(state.changes)} state ${state.changes === 1 ? 'change' : 'changes'} since the add-on started.`));
-      }
-      const nodes = [
-        notOnlineHelp(state),
-        kvTable([
-          ['Connector state', stateDetails],
-          ['Process', [el('div', null, processPill(process)),
-            process.started_at ? muted(`Started ${since(process.started_at, now)}.`) : null]],
-          ['Connector version', knownVersion(startup.connector_version)
-            ? [el('div', null, startup.connector_version), muted('Installed from Twingate\'s package repository when the add-on starts.')]
-            : muted(startup.connector_version ? 'Unknown: the Connector did not report its version.' : 'Not known yet.')],
-          ['Add-on version', startup.addon_version || '–'],
-        ]),
-      ];
-      if (state.history && state.history.length) {
-        nodes.push(el('h3', 'tg-h3', 'Recent state changes'));
-        nodes.push(el('p', 'tg-muted tg-small', 'As printed by the Connector in its log, newest first.'));
-        nodes.push(historyTable(state.history));
-      }
-      return nodes;
-    });
-  }
-
-  const LEVEL_TEXT = {
-    error: 'level 3: errors only',
-    warn: 'level 4: errors and warnings',
-    info: 'level 5: errors, warnings and information',
-    debug: 'level 7: everything, very verbose',
-  };
-
-  function renderConfiguration(data) {
-    const startup = data.startup || {};
-    render('configuration', [data.ready, startup.network, startup.log_level, startup.hostname_label, startup.deployed_by_label,
-      startup.connection_logs, startup.metrics_port], () => {
-      if (!data.ready) {
-        return el('p', 'tg-empty', 'Available when the Connector has started.');
-      }
-      const url = adminConsole(startup.network);
-      return kvTable([
-        ['Twingate network', [code(startup.network || '–'), url ? muted(link(url, url.slice(8, -1))) : null]],
-        ['Log level', [code(startup.log_level || 'info'), muted(`Connector log ${LEVEL_TEXT[startup.log_level] || ''}.`)]],
-        ['Hostname label', startup.hostname_label
-          ? [code(startup.hostname_label), muted('Sent to Twingate as the Connector\'s hostname, shown in its details in the Admin Console.')]
-          : muted('None.')],
-        ['Deployed by label', startup.deployed_by_label ? code(startup.deployed_by_label) : muted('None.')],
-        ['Connection logs', startup.connection_logs
-          ? [el('div', null, 'On'), muted('The Connector writes a log line for every connection, including the user\'s email address.')]
-          : [el('div', null, 'Off'), muted('See Recent connections below.')]],
-        ['Metrics', startup.metrics_port
-          ? [el('div', null, 'Port ', code(startup.metrics_port), ' inside the add-on container'),
-            muted('Prometheus format at /metrics. Reachable from Home Assistant and other add-ons on the internal add-on network, not published on the host or your LAN.')]
-          : muted('Off.')],
-        ['Tokens', muted('The access and refresh tokens are set in the add-on\'s Configuration tab and are never shown here.')],
-      ]);
-    });
-  }
-
-  const PATHS = [
-    ['direct', 'Direct', 'success'],
-    ['relay_quic', 'Relay (QUIC)', 'info'],
-    ['relay_tcp', 'Relay (TCP)', 'warning'],
-    ['relay_other', 'Relay', 'warning'],
-    ['other', 'Other', 'neutral'],
-  ];
-
-  function renderTraffic(data) {
-    const metrics = data.metrics || {};
-    const process = data.process || {};
-    render('traffic', [metrics, process.state], () => {
-      if (!metrics.available) {
-        if (process.state !== 'running') {
-          return el('p', 'tg-empty', 'Available when the Connector runs.');
-        }
-        return callout('warning', 'Metrics are not available',
-          el('p', null, `The Connector's metrics endpoint did not answer (${metrics.error || 'unknown error'}). It starts with the Connector.`));
-      }
-      const inbound = metrics.inbound;
-      const outbound = metrics.outbound;
-      const total = Math.max(1, inbound.total + outbound.total);
-      const rows = PATHS
-        .filter(([key]) => key === 'direct' || key === 'relay_quic' || key === 'relay_tcp' || inbound[key] || outbound[key])
-        .map(([key, label, kind]) => [
-          label,
-          bytes(inbound[key]),
-          bytes(outbound[key]),
-          bar((inbound[key] + outbound[key]) / total, kind),
-        ]);
-      const current = metrics.rate;
-      return [
-        el('div', 'tg-grid',
-          card('Received from Resources', bytes(inbound.total), `${bytes(inbound.relay)} of it through relays`),
-          card('Sent to Resources', bytes(outbound.total), `${bytes(outbound.relay)} of it through relays`),
-          card('Current rate', current ? rate(current.inbound_bps + current.outbound_bps) : '–',
-            current ? `${rate(current.inbound_bps)} received, ${rate(current.outbound_bps)} sent (last ${current.window_seconds} s)` : 'Measuring, shown after about 10 seconds'),
-          card('Resources', num(metrics.resources), 'Available to this Connector'),
-          card('Relay regions', num(metrics.relay_regions), 'Regions with Twingate Relays this Connector is connected to'),
-          card('Connector uptime', duration(metrics.uptime_seconds), 'Reported by the Connector')),
-        el('h3', 'tg-h3', 'By path'),
-        table([
-          { label: 'Path' },
-          { label: 'Received from Resources', numeric: true },
-          { label: 'Sent to Resources', numeric: true },
-          { label: 'Share' },
-        ], rows, 'tg-table--stack'),
-        el('p', 'tg-muted tg-small',
-          'Direct traffic flows peer-to-peer between a Twingate Client and the Connector; relayed traffic passes through a Twingate Relay. ',
-          'Counters start at zero when the Connector starts.'),
-      ];
-    });
-  }
-
-  function renderProblems(data) {
-    const problems = data.problems || { items: [], counts: {} };
-    const startup = data.startup || {};
-    const relay = data.relay || {};
-    render('problems', [data.ready, relay.expected, problems, startup.log_level], () => {
-      if (!data.ready) {
-        return el('p', 'tg-empty', 'Available when the Connector has started.');
-      }
-      if (!relay.expected) {
-        return el('p', 'tg-empty', 'Not available: the Connector writes its log directly to the add-on log.');
-      }
-      const nodes = [
-        el('p', null, 'Warnings and errors from the Connector\'s log since the add-on started, grouped by message (numbers ignored), most recent first. IP addresses and email addresses are shown as [IP] and [email]. Kept in memory only. The full log is in the add-on\'s Log tab.'),
-      ];
-      if (startup.log_level === 'error') {
-        nodes.push(muted('With log level error, the Connector logs errors only. Choose warn or info to see its warnings here.'));
-      }
-      const items = problems.items || [];
-      if (!items.length) {
-        nodes.push(el('p', 'tg-empty', 'No warnings or errors since the add-on started.'));
-        return nodes;
-      }
-      const rows = items.map((item) => [
-        clockTime(item.last),
-        pill(item.level === 'error' ? 'danger' : 'warning', item.level === 'error' ? 'Error' : 'Warning'),
-        [item.source ? el('div', 'tg-muted tg-small', item.source) : null, el('span', 'tg-mono tg-break', item.message)],
-        num(item.count),
-      ]);
-      nodes.push(table([
-        { label: 'Last seen', cellClass: 'tg-nowrap' },
-        { label: 'Level' },
-        { label: 'Message' },
-        { label: 'Count', numeric: true },
-      ], rows, 'tg-table--stack tg-table--compact'));
-      return nodes;
-    });
-  }
+  const NOT_STARTED = 'Available when the Connector has started';
+  const NO_RELAY = 'Not available: the Connector writes its log directly to the add-on log.';
 
   const RESULTS = {
     open: ['info', 'Open'],
@@ -574,41 +589,60 @@
     const connections = data.connections || {};
     const startup = data.startup || {};
     const relay = data.relay || {};
-    const open = (connections.items || []).some((item) => item.result === 'open');
-    render('connections', [data.ready, relay.expected, connections, startup.log_level, open ? Math.floor(now / 10) : 0], () => {
+    const totals = connections.totals || {};
+    const items = connections.items || [];
+    const listed = data.ready && connections.enabled && relay.expected;
+
+    let digest;
+    let level = 0;
+    let badge = '';
+    if (!data.ready) {
+      digest = NOT_STARTED;
+    } else if (!connections.enabled) {
+      digest = 'Off: turn on the connection_logs option to list them';
+    } else if (connections.unsupported) {
+      digest = 'Your Twingate plan does not include connection logs';
+      level = 1;
+      badge = 'Not in your plan';
+    } else if (!relay.expected) {
+      digest = 'Not available';
+    } else if (!items.length) {
+      digest = 'None since the add-on started';
+    } else {
+      digest = [count(totals.shown, 'connection'), totals.open ? `${num(totals.open)} open` : null,
+        totals.failed ? `${num(totals.failed)} failed or denied` : null, count(totals.users, 'user')].filter(Boolean).join(', ');
+    }
+    sections.update('connections', { digest, level, badge, open: data.ready ? Boolean(connections.enabled) : null });
+
+    const shown = sections.rows('connections', listed ? items.length : 0, LIST_LIMIT);
+    const open = items.some((item) => item.result === 'open');
+    render('connections', [data.ready, relay.expected, connections, startup.log_level, open ? Math.floor(now / 10) : 0, shown], () => {
       if (!data.ready) {
-        return el('p', 'tg-empty', 'Available when the Connector has started.');
+        return el('p', 'tg-empty', `${NOT_STARTED}.`);
       }
       if (!connections.enabled) {
         return callout('info', 'Connection logs are off',
-          el('p', null, 'To see recent connections here, turn on the option connection_logs in the add-on\'s Configuration tab and restart the add-on. The page then lists when each connection started, which user made it, the Resource and port, whether it went direct or through a relay, the bytes received and sent, the duration, the approximate location and the result.'),
-          el('p', null, 'Connection logs contain personal data: the email address of every user, the Resources they use, and their device\'s public IP address and approximate location. The Connector writes one line per connection to the add-on log, which Home Assistant keeps with its other logs. This page keeps its summaries in memory only and does not show the IP address.'));
+          el('p', null, 'Turn on connection_logs in the add-on\'s Configuration tab and restart the add-on to list each connection here: user, Resource, path, bytes, duration, location and result.'),
+          el('p', null, 'Connection logs contain personal data: the email address of every user, the Resources they use and their device\'s public IP address and location. The add-on log keeps them.'));
       }
       const nodes = [];
       if (connections.unsupported) {
         nodes.push(callout('warning', 'Your Twingate plan does not include connection logs',
-          el('p', null, 'The Connector logged that network analytics is not supported in your Twingate product tier, so it ignores the connection_logs option and reports no connections.')));
+          el('p', null, 'The Connector ignores the connection_logs option and reports no connections.')));
       }
       if (!relay.expected) {
-        nodes.push(el('p', 'tg-empty', 'Not available: the Connector writes its log directly to the add-on log.'));
+        nodes.push(el('p', 'tg-empty', NO_RELAY));
         return nodes;
       }
-      nodes.push(el('p', null, 'The newest 100 connections since the add-on started, from the Connector\'s connection logs, newest first. Kept in memory only. The client\'s public IP address and device ID are not shown here; the full lines are in the add-on\'s Log tab.'));
-      const totals = connections.totals || {};
-      const items = connections.items || [];
       if (!items.length) {
-        nodes.push(el('p', 'tg-empty', 'No connections yet. They appear here when someone uses a Resource through this Connector.'));
+        nodes.push(el('p', 'tg-empty', 'No connections yet. They appear when someone uses a Resource through this Connector.'));
         if (startup.log_level === 'error' && !connections.unsupported) {
-          nodes.push(muted('With log level error, the Connector does not log the warning it gives when your Twingate plan does not include connection logs. If no connections appear although Resources are used through this Connector, choose the log level warn or info, restart the add-on and check Recent warnings and errors.'));
+          nodes.push(note('With log level error, the Connector does not log that your Twingate plan lacks connection logs. If none appear, choose warn or info and check Warnings and errors.'));
         }
         return nodes;
       }
-      nodes.push(el('div', 'tg-grid',
-        card('Connections', num(totals.shown), `${num(connections.events)} connection log lines since the add-on started`),
-        card('Open', num(totals.open), 'Established and not closed yet'),
-        card('Failed or denied', num(totals.failed), 'Could not connect, or not allowed'),
-        card('Users', num(totals.users), 'Distinct users in the list')));
-      const rows = items.map((item) => [
+      nodes.push(note(`Newest first, from ${count(connections.events, 'connection log line')} since the add-on started. Kept in memory only, without the device's IP address and ID.`));
+      const rows = items.slice(0, shown).map((item) => [
         clockTime(item.t),
         item.user || '–',
         resourceLabel(item),
@@ -630,8 +664,254 @@
         { label: 'Location' },
         { label: 'Result' },
       ], rows, 'tg-table--stack tg-table--compact'));
-      nodes.push(el('p', 'tg-muted tg-small', 'Received and sent are the bytes the Connector counted on the connection. The location is derived by Twingate from the public IP address of the user\'s device.'));
       return nodes;
+    });
+  }
+
+  function renderProblems(data) {
+    const problems = data.problems || { items: [], counts: {} };
+    const counts = problems.counts || {};
+    // Errors first, so that the shortened list shows them; then newest first.
+    const items = (problems.items || []).slice().sort((a, b) =>
+      ((b.level === 'error') - (a.level === 'error')) || ((b.last || 0) - (a.last || 0)));
+    const startup = data.startup || {};
+    const relay = data.relay || {};
+    const listed = data.ready && relay.expected;
+
+    let digest;
+    let level = 0;
+    let badge = '';
+    if (!data.ready) {
+      digest = NOT_STARTED;
+    } else if (!relay.expected) {
+      digest = 'Not available';
+    } else if (!items.length) {
+      digest = startup.log_level === 'error' ? 'No errors since the add-on started (log level error: no warnings)' : 'None since the add-on started';
+    } else {
+      const errors = counts.error || 0;
+      const warnings = counts.warning || 0;
+      level = errors ? 2 : 1;
+      badge = errors ? count(errors, 'error') : count(warnings, 'warning');
+      const latest = Math.max(...items.map((item) => item.last || 0));
+      digest = `${listing([errors ? count(errors, 'error') : null, warnings ? count(warnings, 'warning') : null])} since the add-on started, latest at ${clockTime(latest)}`;
+    }
+    sections.update('problems', { digest, level, badge, open: data.ready ? false : null });
+
+    const shown = sections.rows('problems', listed ? items.length : 0, LIST_LIMIT);
+    render('problems', [data.ready, relay.expected, problems, startup.log_level, shown], () => {
+      if (!data.ready) {
+        return el('p', 'tg-empty', `${NOT_STARTED}.`);
+      }
+      if (!relay.expected) {
+        return el('p', 'tg-empty', NO_RELAY);
+      }
+      const nodes = [];
+      if (startup.log_level === 'error') {
+        nodes.push(note('With log level error, the Connector logs errors only. Choose warn or info to see its warnings here.'));
+      }
+      if (!items.length) {
+        nodes.push(el('p', 'tg-empty', 'No warnings or errors since the add-on started.'));
+        return nodes;
+      }
+      nodes.push(note('Grouped by message, errors first, newest first. IP and email addresses are shown as [IP] and [email]; the add-on\'s Log tab has the full log.'));
+      const rows = items.slice(0, shown).map((item) => [
+        clockTime(item.last),
+        pill(item.level === 'error' ? 'danger' : 'warning', item.level === 'error' ? 'Error' : 'Warning'),
+        [item.source ? el('div', 'tg-muted tg-small', item.source) : null, el('span', 'tg-mono tg-break', item.message)],
+        num(item.count),
+      ]);
+      nodes.push(table([
+        { label: 'Last seen', cellClass: 'tg-nowrap' },
+        { label: 'Level' },
+        { label: 'Message' },
+        { label: 'Count', numeric: true },
+      ], rows, 'tg-table--stack tg-table--compact'));
+      return nodes;
+    });
+  }
+
+  const PATHS = [
+    ['direct', 'Direct', 'success'],
+    ['relay_quic', 'Relay (QUIC)', 'info'],
+    ['relay_tcp', 'Relay (TCP)', 'warning'],
+    ['relay_other', 'Relay', 'warning'],
+    ['other', 'Other', 'neutral'],
+  ];
+
+  function renderTraffic(data, now) {
+    const metrics = data.metrics || {};
+    const process = data.process || {};
+    // Shortly after the start the metrics endpoint may not answer yet.
+    const missing = !metrics.available && process.state === 'running' && process.started_at && now - process.started_at > 30;
+
+    let digest;
+    let level = 0;
+    let badge = '';
+    if (metrics.available) {
+      const inbound = metrics.inbound;
+      const outbound = metrics.outbound;
+      const total = inbound.total + outbound.total;
+      const parts = [`${bytes(inbound.total)} received`, `${bytes(outbound.total)} sent`];
+      if (total > 0) {
+        parts.push(`${Math.round(((inbound.direct + outbound.direct) / total) * 100)}% direct`);
+      }
+      if (metrics.rate) {
+        parts.push(`${rate(metrics.rate.inbound_bps + metrics.rate.outbound_bps)} now`);
+      }
+      digest = parts.join(', ');
+    } else if (missing) {
+      digest = 'The Connector\'s metrics endpoint does not answer';
+      level = 1;
+      badge = 'No metrics';
+    } else {
+      digest = process.state === 'running' ? 'Metrics not available yet' : 'Available when the Connector runs';
+    }
+    sections.update('traffic', { digest, level, badge, open: false });
+
+    render('traffic', [metrics, process.state, missing], () => {
+      if (!metrics.available) {
+        if (process.state !== 'running') {
+          return el('p', 'tg-empty', 'Available when the Connector runs.');
+        }
+        return callout('warning', 'Metrics are not available',
+          el('p', null, `The Connector's metrics endpoint did not answer (${metrics.error || 'unknown error'}). It starts with the Connector.`));
+      }
+      const inbound = metrics.inbound;
+      const outbound = metrics.outbound;
+      const total = Math.max(1, inbound.total + outbound.total);
+      const rows = PATHS
+        .filter(([key]) => key === 'direct' || key === 'relay_quic' || key === 'relay_tcp' || inbound[key] || outbound[key])
+        .map(([key, label, kind]) => [
+          label,
+          bytes(inbound[key]),
+          bytes(outbound[key]),
+          bar((inbound[key] + outbound[key]) / total, kind),
+        ]);
+      const current = metrics.rate;
+      return [
+        el('div', 'tg-grid',
+          card('Received from Resources', bytes(inbound.total), `${bytes(inbound.relay)} of it through relays`),
+          card('Sent to Resources', bytes(outbound.total), `${bytes(outbound.relay)} of it through relays`),
+          card('Current rate', current ? rate(current.inbound_bps + current.outbound_bps) : '–',
+            current ? `${rate(current.inbound_bps)} received, ${rate(current.outbound_bps)} sent` : 'Shown after about 10 seconds')),
+        table([
+          { label: 'Path' },
+          { label: 'Received from Resources', numeric: true },
+          { label: 'Sent to Resources', numeric: true },
+          { label: 'Share' },
+        ], rows, 'tg-table--stack'),
+        note('Direct traffic flows peer-to-peer between a Twingate Client and the Connector; relayed traffic passes through a Twingate Relay. Counters start when the Connector starts.'),
+      ];
+    });
+  }
+
+  function historyTable(history) {
+    const rows = history.slice(-10).reverse().map((entry) => [clockTime(entry.t), statePill(entry.state)]);
+    return table([{ label: 'Time', cellClass: 'tg-nowrap' }, { label: 'State' }], rows, 'tg-table--compact');
+  }
+
+  function renderStatus(data, now) {
+    const startup = data.startup || {};
+    const state = data.state || {};
+    const process = data.process || {};
+
+    let digest;
+    let level = 0;
+    let badge = '';
+    if (!data.ready) {
+      digest = NOT_STARTED;
+    } else {
+      if (process.state === 'stopped') {
+        level = 2;
+        badge = 'Not running';
+      } else if (notOnline(state)) {
+        level = state.current === 'Error' ? 2 : 1;
+        badge = state.current;
+      }
+      const parts = [!state.current ? 'No state reported yet'
+        : state.since ? `${state.current} since ${clockTime(state.since)}` : state.current];
+      if (state.current && state.current !== 'Online') {
+        parts.push(state.last_online_at ? `last online ${clockTime(state.last_online_at)}` : 'not online since the add-on started');
+      }
+      if (state.changes) {
+        parts.push(count(state.changes, 'state change'));
+      }
+      digest = parts.join(', ');
+    }
+    sections.update('status', { digest, level, badge, open: data.ready ? false : null });
+
+    render('status', [data.ready, state, process.state, process.started_at, startup.connector_version, startup.addon_version,
+      Math.floor(now / 60)], () => {
+      if (!data.ready) {
+        return el('p', 'tg-empty', `${NOT_STARTED}.`);
+      }
+      let lastOnline = '–';
+      if (state.current === 'Online') {
+        lastOnline = state.online_since ? `Now, without interruption since ${clockTime(state.online_since)}` : 'Now';
+      } else if (state.last_online_at) {
+        lastOnline = since(state.last_online_at, now);
+      } else if (state.current) {
+        lastOnline = 'Not since the add-on started';
+      }
+      const nodes = [
+        kvTable([
+          ['Connector state', [el('div', null, statePill(state.current)),
+            muted(state.since ? `Since ${since(state.since, now)}` : 'Not reported yet')]],
+          ['Last online', lastOnline],
+          ['State changes', `${num(state.changes || 0)} since the add-on started`],
+          ['Process', [el('div', null, processPill(process)),
+            process.started_at ? muted(`Started ${since(process.started_at, now)}`) : null]],
+          ['Connector version', knownVersion(startup.connector_version)
+            ? [el('div', null, startup.connector_version), muted('Installed from Twingate\'s repository when the add-on starts')]
+            : muted(startup.connector_version ? 'Unknown: the Connector did not report its version' : 'Not known yet')],
+          ['Add-on version', startup.addon_version || '–'],
+        ]),
+      ];
+      if (state.history && state.history.length) {
+        nodes.push(el('h3', 'tg-h3', 'Recent state changes'));
+        nodes.push(historyTable(state.history));
+      }
+      return nodes;
+    });
+  }
+
+  const LEVEL_TEXT = {
+    error: 'Level 3: errors only',
+    warn: 'Level 4: errors and warnings',
+    info: 'Level 5: errors, warnings and information',
+    debug: 'Level 7: everything, very verbose',
+  };
+
+  function renderConfiguration(data) {
+    const startup = data.startup || {};
+    sections.update('configuration', {
+      digest: data.ready
+        ? `Network ${startup.network || '–'}, log level ${startup.log_level || 'info'}, connection logs ${startup.connection_logs ? 'on' : 'off'}`
+        : NOT_STARTED,
+      open: data.ready ? false : null,
+    });
+    render('configuration', [data.ready, startup.network, startup.log_level, startup.hostname_label, startup.deployed_by_label,
+      startup.connection_logs, startup.metrics_port], () => {
+      if (!data.ready) {
+        return el('p', 'tg-empty', `${NOT_STARTED}.`);
+      }
+      const url = adminConsole(startup.network);
+      return kvTable([
+        ['Twingate network', [code(startup.network || '–'), url ? muted('Admin Console: ', link(url, url.slice(8, -1))) : null]],
+        ['Log level', [code(startup.log_level || 'info'), LEVEL_TEXT[startup.log_level] ? muted(LEVEL_TEXT[startup.log_level]) : null]],
+        ['Hostname label', startup.hostname_label
+          ? [code(startup.hostname_label), muted('Shown in the Connector\'s details in the Admin Console')]
+          : muted('None')],
+        ['Deployed by label', startup.deployed_by_label ? code(startup.deployed_by_label) : muted('None')],
+        ['Connection logs', startup.connection_logs
+          ? [el('div', null, 'On'), muted('One log line per connection, with the user\'s email address')]
+          : 'Off'],
+        ['Metrics', startup.metrics_port
+          ? [el('div', null, 'Port ', code(startup.metrics_port), ' inside the add-on container'),
+            muted('Prometheus format at /metrics, on the internal add-on network only')]
+          : muted('Off')],
+        ['Tokens', muted('Set in the add-on\'s Configuration tab; never shown here')],
+      ]);
     });
   }
 
@@ -652,6 +932,26 @@
     }
   }
 
+  function renderAll(data) {
+    // Times are compared with the add-on's clock, not the browser's.
+    const now = data.updated_at;
+    renderLead(data);
+    renderNotice(data);
+    renderSummary(data, now);
+    renderConnections(data, now);
+    renderProblems(data);
+    renderTraffic(data, now);
+    renderStatus(data, now);
+    renderConfiguration(data);
+    renderFooter(data);
+  }
+
+  const sections = createSections(SECTIONS_KEY, () => {
+    if (lastData) {
+      renderAll(lastData);
+    }
+  });
+
   // --------------------------------------------------------------------------
   // Polling
   // --------------------------------------------------------------------------
@@ -669,18 +969,9 @@
         throw new Error(`HTTP ${response.status}`);
       }
       const data = await response.json();
-      // Times are compared with the add-on's clock, not the browser's.
-      const now = data.updated_at;
       failures = 0;
-      renderNotice(data);
-      renderSummary(data, now);
-      renderScope(data);
-      renderStatus(data, now);
-      renderConfiguration(data);
-      renderTraffic(data);
-      renderProblems(data);
-      renderConnections(data, now);
-      renderFooter(data);
+      lastData = data;
+      renderAll(data);
       renderLive(true, data.updated_at);
     } catch (error) {
       failures += 1;

@@ -11,6 +11,7 @@
 ## 1.2.0
 
 - Add a read-only status page (Open Web UI): the Connector's state, version, configuration, traffic, recent warnings and errors and, optionally, recent connections. IP addresses and email addresses in the warnings and errors are masked on the page; the add-on log is unchanged
+- The status page shows a summary at the top and the details in sections that open and close. Each section's header sums it up in one line; a section with an error or a warning opens by itself, and the browser remembers which sections you opened or closed. Long lists show the newest 10 entries with a "Show all" button
 - The Connector's output now passes through `s6-log`, which copies every line unchanged to the add-on log and keeps a small copy in memory for the status page. The status page cannot slow down or stop the Connector. `s6-log` uses at most 16 MiB of memory: if lines waiting for a full `/dev/shm` reach this limit, it stops keeping the copy until the add-on restarts, and the lines it had just read (about 8 KB) are lost
 - Add the `connection_logs` option (off by default) for the Connector's connection logs, which contain user email addresses and locations
 - Enable the Connector's Prometheus metrics on port 9999 inside the add-on container (not published on the host)

@@ -27,36 +27,69 @@
 
 <main class="tg-container tg-main">
   <h1 class="tg-title">Connector status</h1>
-  <p class="tg-lead">State, configuration and traffic of the Twingate Connector, as the Connector itself reports them. This page is read-only and refreshes every 5 seconds.</p>
+  <p class="tg-lead" id="lead">The Connector's own view. Twingate's view is in the Admin Console.</p>
 
   <div id="notice"></div>
   <div id="summary" class="tg-grid"></div>
-  <div id="scope"></div>
 
-  <section class="tg-section" aria-labelledby="status-heading">
-    <h2 id="status-heading" class="tg-h2">Status</h2>
-    <div id="status"><p class="tg-empty">Loading…</p></div>
-  </section>
+  <div class="tg-sections">
+    <details class="tg-details" data-section="connections">
+      <summary class="tg-details__summary">
+        <h2 class="tg-details__title">Recent connections</h2>
+        <span class="tg-details__badge"></span>
+        <span class="tg-details__digest">Loading…</span>
+      </summary>
+      <div class="tg-details__body">
+        <div id="connections"><p class="tg-empty">Loading…</p></div>
+        <p class="tg-showall" hidden><button type="button" class="tg-showall__button"></button></p>
+      </div>
+    </details>
 
-  <section class="tg-section" aria-labelledby="configuration-heading">
-    <h2 id="configuration-heading" class="tg-h2">Configuration</h2>
-    <div id="configuration"><p class="tg-empty">Loading…</p></div>
-  </section>
+    <details class="tg-details" data-section="problems">
+      <summary class="tg-details__summary">
+        <h2 class="tg-details__title">Warnings and errors</h2>
+        <span class="tg-details__badge"></span>
+        <span class="tg-details__digest">Loading…</span>
+      </summary>
+      <div class="tg-details__body">
+        <div id="problems"><p class="tg-empty">Loading…</p></div>
+        <p class="tg-showall" hidden><button type="button" class="tg-showall__button"></button></p>
+      </div>
+    </details>
 
-  <section class="tg-section" aria-labelledby="traffic-heading">
-    <h2 id="traffic-heading" class="tg-h2">Traffic</h2>
-    <div id="traffic"><p class="tg-empty">Loading…</p></div>
-  </section>
+    <details class="tg-details" data-section="traffic">
+      <summary class="tg-details__summary">
+        <h2 class="tg-details__title">Traffic</h2>
+        <span class="tg-details__badge"></span>
+        <span class="tg-details__digest">Loading…</span>
+      </summary>
+      <div class="tg-details__body">
+        <div id="traffic"><p class="tg-empty">Loading…</p></div>
+      </div>
+    </details>
 
-  <section class="tg-section" aria-labelledby="problems-heading">
-    <h2 id="problems-heading" class="tg-h2">Recent warnings and errors</h2>
-    <div id="problems"><p class="tg-empty">Loading…</p></div>
-  </section>
+    <details class="tg-details" data-section="status">
+      <summary class="tg-details__summary">
+        <h2 class="tg-details__title">Status details</h2>
+        <span class="tg-details__badge"></span>
+        <span class="tg-details__digest">Loading…</span>
+      </summary>
+      <div class="tg-details__body">
+        <div id="status"><p class="tg-empty">Loading…</p></div>
+      </div>
+    </details>
 
-  <section class="tg-section" aria-labelledby="connections-heading">
-    <h2 id="connections-heading" class="tg-h2">Recent connections</h2>
-    <div id="connections"><p class="tg-empty">Loading…</p></div>
-  </section>
+    <details class="tg-details" data-section="configuration">
+      <summary class="tg-details__summary">
+        <h2 class="tg-details__title">Configuration</h2>
+        <span class="tg-details__badge"></span>
+        <span class="tg-details__digest">Loading…</span>
+      </summary>
+      <div class="tg-details__body">
+        <div id="configuration"><p class="tg-empty">Loading…</p></div>
+      </div>
+    </details>
+  </div>
 
   <footer class="tg-footer tg-section" id="footer">
     <p>Read-only status page of the Twingate Connector add-on.</p>

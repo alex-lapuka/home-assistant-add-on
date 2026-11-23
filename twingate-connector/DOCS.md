@@ -51,24 +51,41 @@ for example `local-twingate-connector`) and `deployed_by`
 ## Web UI
 
 Select **Open Web UI** on the add-on page (or turn on **Show in sidebar**) to
-see a read-only status page. It refreshes every 5 seconds and shows:
+see a read-only status page. It refreshes every 5 seconds.
 
-- **Status**: whether the Connector process runs, the Connector version, the
-  Connector's latest state as it prints it in its log (`Online`,
-  `Authentication`, `Offline` or `Error`), since when, when it was last
-  online and the recent state changes.
-- **Configuration**: the network name, log level, the hostname and
-  deployed-by labels, whether connection logs are on and the metrics port.
-- **Traffic**, from the Connector's metrics: bytes received from and sent to
-  Resources, split into direct (peer-to-peer) and relayed traffic, the
-  current rate, the number of Resources available to the Connector, the
-  number of relay regions it is connected to and its uptime. The counters
-  start at zero when the Connector starts.
-- **Recent warnings and errors** from the Connector's log, grouped by
-  message. IP addresses (with their port) and email addresses in these
-  messages are shown as `[IP]` and `[email]`, whether `connection_logs` is on
-  or off; the add-on log keeps the lines unchanged.
-- **Recent connections**, only when `connection_logs` is on.
+The top of the page always shows the Connector's state, whether its process
+runs and its version, the number of Resources available to it and of relay
+regions it is connected to, its uptime, and any problem that needs action
+(for example when the Connector does not come online). Everything else is in
+sections that you open and close. The header of each section sums it up in
+one line, so a closed section still tells the essential fact:
+
+- **Recent connections** (for example `12 connections, 1 open, 3 users`):
+  open when `connection_logs` is on, see [Connection logs](#connection-logs).
+- **Warnings and errors** from the Connector's log, grouped by message
+  (for example `1 error and 4 warnings since the add-on started`). IP
+  addresses (with their port) and email addresses in these messages are
+  shown as `[IP]` and `[email]`, whether `connection_logs` is on or off; the
+  add-on log keeps the lines unchanged.
+- **Traffic**, from the Connector's metrics (for example `2.3 MiB received,
+  145 KiB sent, 81% direct`): bytes received from and sent to Resources,
+  split into direct (peer-to-peer) and relayed traffic, and the current rate.
+  The counters start at zero when the Connector starts.
+- **Status details**: the Connector's latest state as it prints it in its
+  log (`Online`, `Authentication`, `Offline` or `Error`), since when, when it
+  was last online, the recent state changes, and the Connector and add-on
+  versions.
+- **Configuration** (for example `Network mynetwork, log level info,
+  connection logs off`): also the hostname and deployed-by labels and the
+  metrics port.
+
+Recent connections is open when `connection_logs` is on; the other sections
+start closed. A section that shows an error or a warning opens by itself
+and has a badge in its header, for example `1 error`; it never closes by
+itself. The lists of connections and of warnings and errors show the newest
+10 entries; **Show all** lists the rest. The
+browser remembers which sections you opened or closed and your **Show all**
+choices.
 
 The page shows the Connector's own view. Whether Twingate sees the Connector
 as online, and which Resources and users it serves, is shown in the Twingate
