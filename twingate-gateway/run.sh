@@ -973,6 +973,9 @@ main() {
     fi
 
     bashio::log.info "Twingate network: ${NETWORK}"
+    # The Connector add-on on this Home Assistant resolves the add-on's host
+    # name; a Connector elsewhere needs the host's LAN IP address and host port.
+    bashio::log.info "Gateway address for Twingate: ${PROXY_HOSTNAME:-<add-on host name>}.${SUPERVISOR_DNS_SUFFIX}:${GATEWAY_PORT} when the Twingate Connector add-on runs on this Home Assistant; for a Connector elsewhere, the host's LAN IP address with the host port of ${GATEWAY_PORT}/tcp."
     log_access_rules
     header_names=$(jq --raw-output 'keys | join(", ")' <<<"${HEADERS_JSON}")
     if [[ -n "${header_names}" ]]; then
