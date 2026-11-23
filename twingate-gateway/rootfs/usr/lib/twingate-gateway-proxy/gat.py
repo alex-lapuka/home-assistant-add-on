@@ -280,14 +280,17 @@ def _plain_ipv4(address: str) -> bool:
 
 
 class Identity:
-    """The caller of a verified token."""
+    """The caller of a verified token.
 
-    __slots__ = ("expires_at", "groups", "resource_id", "user_id", "username")
+    The groups in the token are not kept: the access level is the same for
+    every caller (see access_rules.py).
+    """
 
-    def __init__(self, username: str, user_id: str, groups: tuple[str, ...], resource_id: str, expires_at: float) -> None:
+    __slots__ = ("expires_at", "resource_id", "user_id", "username")
+
+    def __init__(self, username: str, user_id: str, resource_id: str, expires_at: float) -> None:
         self.username = username
         self.user_id = user_id
-        self.groups = groups
         self.resource_id = resource_id
         self.expires_at = expires_at
 
@@ -338,6 +341,8 @@ def check_claims(claims: dict, network: str, now: float) -> None:
         downstream.get("tls_mode") not in TLS_SERVER_MODES or upstream.get("tls_mode") not in TLS_CLIENT_MODES
     ):
         raise TokenError("invalid TLS mode")
+    # The proxy does not use the groups, but the Gateway refuses a token whose
+    # groups are not a list, and so does the proxy.
     groups = user.get("groups", [])
     if groups is not None and not isinstance(groups, list):
         raise TokenError("invalid groups")
@@ -418,8 +423,7 @@ class Verifier:
         resource = claims["resource"]
         self.binding.check(resource)
         user = claims["user"]
-        groups = tuple(group for group in (user.get("groups") or []) if isinstance(group, str))
-        identity = Identity(user["username"], user["id"], groups, resource["id"], float(claims["exp"]))
+        identity = Identity(user["username"], user["id"], resource["id"], float(claims["exp"]))
         digest = hashlib.sha256(token.encode("utf-8", "surrogatepass")).digest()
         with self._lock:
             self._cache[digest] = identity

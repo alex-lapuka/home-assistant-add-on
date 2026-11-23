@@ -19,7 +19,7 @@ comes from:
 - Docker Hub's list of the tags of twingate/gateway, read once a day, which
   says which Gateway release a rebuild of the add-on would install;
 - the Home Assistant API proxy (supervisor_proxy.py), which sends its state
-  and summaries of the newest proxied requests (Twingate user, grant,
+  and summaries of the newest proxied requests (Twingate user, request,
   decision; no query strings, webhook IDs masked, no tokens) over a second
   Unix socket, at least every 5 seconds. They are kept in memory only.
 
@@ -84,11 +84,11 @@ _SLUG = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 _HOSTNAME = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*")
 _HOSTED_NETWORK = ipaddress.ip_network("172.30.32.0/23")
 _PROXY_METHOD = re.compile(r"[A-Z]{1,16}|\?")
-_PROXY_GRANTS = ("full", "read", "mcp", "read+mcp", "none", "")
-_PROXY_DECISIONS = ("read", "mcp", "full", "denied", "blocked", "invalid", "unauthenticated", "limited", "error", "closed")
+_PROXY_DECISIONS = ("read", "mcp", "write", "denied", "blocked", "invalid", "unauthenticated", "limited", "error", "closed")
 _PROXY_KINDS = ("http", "ws", "ws-cmd")
 _PROXY_COUNTS = ("requests", "allowed", "denied", "blocked", "unauthenticated", "invalid", "limited", "errors")
-MAX_GROUPS = 100
+# The three toggles of the API proxy's access level.
+_PROXY_ACCESS = ("read", "mcp", "write")
 
 # The release check. The Dockerfile takes the Gateway from the image tag
 # twingate/gateway:<major> on Docker Hub. Docker Hub's tag list (one page of
@@ -236,17 +236,11 @@ def _valid_port(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and 0 < value < 65536
 
 
-def _group_names(value: object) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [name[:256] for name in value[:MAX_GROUPS] if isinstance(name, str) and name and name.isprintable()]
-
-
 def _clean_proxy_settings(raw: object) -> dict | None:
-    """The proxy part of the status file: how to reach it and who holds which grant."""
+    """The proxy part of the status file: how to reach it and its access level."""
     if not isinstance(raw, dict):
         return None
-    groups = raw.get("groups") if isinstance(raw.get("groups"), dict) else {}
+    access = raw.get("access") if isinstance(raw.get("access"), dict) else {}
     return {
         "port": raw.get("port") if _valid_port(raw.get("port")) else 8124,
         "host_port": raw.get("host_port") if _valid_port(raw.get("host_port")) else None,
@@ -254,7 +248,8 @@ def _clean_proxy_settings(raw: object) -> dict | None:
         "hostname": _match(_HOSTNAME, raw.get("hostname")),
         "dns_name": _match(_HOSTNAME, raw.get("dns_name")),
         "token_header": _match(_HEADER_NAME, raw.get("token_header")),
-        "groups": {key: _group_names(groups.get(key)) for key in ("read", "mcp", "full")},
+        # As the proxy reads them: anything but true is off.
+        "access": {key: access.get(key) is True for key in _PROXY_ACCESS},
     }
 
 
@@ -584,7 +579,6 @@ def _clean_proxy_record(raw: object) -> dict | None:
         "t": when,
         "kind": raw.get("kind") if raw.get("kind") in _PROXY_KINDS else "http",
         "user": _text(raw.get("user"), 200) or "",
-        "grant": raw.get("grant") if raw.get("grant") in _PROXY_GRANTS else "",
         "method": method if method == "WS" or _match(_PROXY_METHOD, method) else "?",
         "path": _text(raw.get("path"), 600) or "",
         "q": raw.get("q") is True,
@@ -1290,7 +1284,7 @@ def self_check() -> int:
                 "type": "snapshot",
                 "proxy": {"state": "running", "keys": {"ok": True, "keys": 1}, "counts": {"requests": 2, "denied": 1}},
                 "records": [
-                    {"id": "p1-1", "t": 1.0, "user": "<b>x</b>", "grant": "read", "method": "GET", "path": "/api/states", "status": 200, "decision": "read"},
+                    {"id": "p1-1", "t": 1.0, "user": "<b>x</b>", "method": "GET", "path": "/api/states", "status": 200, "decision": "write"},
                     {"id": "not an id!", "t": 2.0},
                     {"id": "p1-2", "t": 3.0, "grant": "root", "method": "<x>", "decision": "allowed-everything"},
                 ],
@@ -1298,17 +1292,18 @@ def self_check() -> int:
         ).encode()
     )
     snapshot = proxy.snapshot()
-    settings = _clean_proxy_settings({"port": 8124, "host_port": True, "hostname": "Bad Name", "groups": {"read": ["A", 5, "\n"], "full": "x"}})
+    settings = _clean_proxy_settings({"port": 8124, "host_port": True, "hostname": "Bad Name", "access": {"read": True, "mcp": "true", "full": True}})
     if (
         snapshot["state"] != "running"
         or [record["id"] for record in snapshot["records"]] != ["p1-2", "p1-1"]
-        or snapshot["records"][0]["grant"] != ""
+        or "grant" in snapshot["records"][0]
         or snapshot["records"][0]["method"] != "?"
         or snapshot["records"][0]["decision"] != "error"
+        or snapshot["records"][1]["decision"] != "write"
         or not snapshot["reporting"]
         or settings["host_port"] is not None
         or settings["hostname"] is not None
-        or settings["groups"] != {"read": ["A"], "mcp": [], "full": []}
+        or settings["access"] != {"read": True, "mcp": False, "write": False}
     ):
         print(f"self check failed: proxy summaries {snapshot} {settings}", file=sys.stderr)
         return 1

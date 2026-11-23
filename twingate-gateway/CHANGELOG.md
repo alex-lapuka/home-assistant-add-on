@@ -71,23 +71,28 @@
 - The Gateway adds the client's Twingate token to every Web App request
   (`X-Twingate-Gateway-Token`); the proxy verifies it (signature with the
   network's signing keys, issuer, audience, expiry, and that it was issued
-  for this Resource) and takes the caller's username and groups from it.
-  Requests without a valid token get `401`.
-- New options `read_groups`, `mcp_groups` and `full_groups` give Twingate
-  groups the Read (reads over REST and WebSocket, an allow-list, without
-  templates), MCP (`/api/mcp`; what it can do is set in Home Assistant's MCP
-  Server settings, by default any action on any entity) and Full (everything
-  not always blocked) grants. Direct routes into the Supervisor and the
-  host, account and token management, backups, the Supervisor integration's
-  MCP tools and MCP `call_action` calls for `hassio` and `backup` actions
-  are blocked for everyone; with Full they remain reachable indirectly. With
-  `read_groups` empty, everyone with access to the Resource has Read. The
-  add-on logs the effective rules at start. Requests that browsers mark as
-  coming from a web page of another site are refused, so that a website
-  opened on an authorised device cannot use the API or the WebSocket.
+  for this Resource) and takes the caller's username from it. Requests
+  without a valid token get `401`.
+- New options `allow_read` (on by default), `allow_mcp` and `allow_write`
+  (off by default), shown as the toggles **Allow reading**, **Allow MCP**
+  and **Allow changes (write)**, set one access level for everyone who has
+  access to the Resource in Twingate: reads over REST and WebSocket (an
+  allow-list, without templates), the MCP endpoint `/api/mcp` (what it can
+  do is set in Home Assistant's MCP Server settings, by default any action
+  on any entity), and everything not always blocked, which includes reading
+  and MCP. Direct routes into the Supervisor and the host, account and
+  token management, backups, the Supervisor integration's MCP tools and MCP
+  `call_action` calls for `hassio` and `backup` actions are blocked for
+  everyone; with write they remain reachable indirectly. A request outside
+  the access level gets `403` with the name of the toggle that would allow
+  it; with all three off, every request does. The add-on logs the access
+  level at start, and warns when all three are off. Requests that browsers
+  mark as coming from a web page of another site are refused, so that a
+  website opened on an authorised device cannot use the API or the
+  WebSocket.
 - The proxy logs every request and WebSocket command with the Twingate
-  username, its grants and the decision, and the Web UI shows the proxy's
-  state, the access rules and the newest proxied requests.
+  username, the access level and the decision, and the Web UI shows the
+  proxy's state, the access level and the newest proxied requests.
 - The Web UI shows a summary at the top and the details in sections that
   open and close, each summed up in one line in its header; a section with
   an error or a warning opens by itself, the browser remembers which

@@ -5,17 +5,18 @@ Twingate without ever holding a Home Assistant credential.
 
 It runs the [Twingate Gateway](https://github.com/Twingate/gateway) in Web App
 mode, and next to it a small proxy for the Home Assistant API. Who may use the
-API is decided in Twingate, per user, group or service account, and what each
-caller may do is decided by its Twingate groups in this add-on's options:
+API is decided in Twingate, per user, group or service account: everyone who
+has access to the Resource. What they may do is set with three toggles in
+this add-on's options, and is the same for all of them:
 
-- **Read**: read states, registries, history and more, over REST and the
-  WebSocket API, without changing anything.
-- **MCP**: use the Model Context Protocol endpoint `/api/mcp`. What an MCP
-  client can do there is set in Home Assistant's MCP Server settings; with
-  their defaults it can perform any action on any entity.
-- **Full**: use the whole API, except routes into the Supervisor and the
-  host, account and token management and backups, which are blocked for
-  everyone.
+- **Allow reading** (on by default): read states, registries, history and
+  more, over REST and the WebSocket API, without changing anything.
+- **Allow MCP**: use the Model Context Protocol endpoint `/api/mcp`. What an
+  MCP client can do there is set in Home Assistant's MCP Server settings;
+  with their defaults it can perform any action on any entity.
+- **Allow changes (write)**: use the whole API, reading and MCP included,
+  except routes into the Supervisor and the host, account and token
+  management and backups, which are blocked for everyone.
 
 The proxy reaches Home Assistant through the Supervisor with the token that
 Home Assistant gives this add-on when it starts. You create no Home Assistant
@@ -32,9 +33,11 @@ and
 The add-on is experimental. The setup in this guide, with the Twingate
 Connector add-on on the same Home Assistant, has been tried on Home Assistant
 OS on a Raspberry Pi 4 (aarch64) with Home Assistant 2026.11: REST requests
-through the proxy with the Read grant, and a request refused for lack of the
-MCP grant. Not yet tried on a real installation: the WebSocket API, an MCP
-client, the Full grant, and updating from 0.2.0 to 0.3.0 in place.
+through the proxy with reading allowed, and a request refused because MCP
+was not allowed. That was a development version which set the access per
+Twingate group, with the same defaults. Not yet tried on a real
+installation: the three toggles as they are now, the WebSocket API, an MCP
+client, write access, and updating from 0.2.0 to 0.3.0 in place.
 
 ## How it works
 
@@ -56,7 +59,8 @@ client, the Full grant, and updating from 0.2.0 to 0.3.0 in place.
    the header `X-Twingate-Gateway-Token`.
 6. The proxy verifies that token itself (signature, network, expiry, and
    that it was issued for this Resource), takes the caller's Twingate
-   username and groups from it, and applies the access rules.
+   username from it, and applies the access level set in the add-on's
+   options, which is the same for every caller.
 7. An allowed request goes to Home Assistant through the Supervisor
    (`http://supervisor/core/api/...`, `ws://supervisor/core/websocket`),
    authenticated with the add-on's Supervisor token. Home Assistant runs it
@@ -118,18 +122,12 @@ or updated.
 2. On the **Configuration** tab, set `network` to your Twingate network name:
    the `<network>` part of `https://<network>.twingate.com`. This is the same
    value you entered in the Connector add-on.
-3. Decide who may do what, by Twingate group (see
-   [Access rules](#access-rules)). For example:
-
-   ```yaml
-   read_groups: []          # empty: everyone with access to the Resource may read
-   mcp_groups:
-     - Home Agents
-   full_groups:
-     - Home Admins
-   ```
-
-   You can change this later; the add-on applies it at its next start.
+3. Choose what callers may do, with the three toggles (see
+   [API access](#api-access)): **Allow reading** is on, **Allow MCP** and
+   **Allow changes (write)** are off. For an MCP client, such as an AI
+   agent, turn on **Allow MCP**. The toggles apply to everyone you give
+   access to the Resource in Twingate (step 4). You can change them later;
+   the add-on applies them at its next start.
 4. Leave the other options at their defaults.
 5. In the **Network** section, container port `8443/tcp` is published on host
    port `8443`. Keep it. A Gateway address with the add-on's host name uses
@@ -435,20 +433,22 @@ recommended.
 
 ### Step 4: Grant access in Twingate
 
+Access to the Resource is the only thing that decides who can use the Home
+Assistant API through the proxy: everyone who has it gets the access level
+set with the toggles in step 1, and the add-on does not tell them apart.
+
 1. In the Admin Console, open the **Home Assistant API** Resource and give
-   access only to the groups that should use the Home Assistant API.
-2. Make sure the groups named in `read_groups`, `mcp_groups` and
-   `full_groups` exist in Twingate with exactly those names (letter case
-   counts).
-3. For unattended agents, use a service account: under **Team** >
+   access only to the users, groups and service accounts that may do
+   everything the toggles allow.
+2. For unattended agents, use a service account: under **Team** >
    **Services**, create a service account, add the **Home Assistant API**
    Resource to it and generate a Service Key. Run the Twingate Client in
    headless mode with that key on the agent's machine
    ([Linux](https://www.twingate.com/docs/linux-headless),
    [Windows](https://www.twingate.com/docs/windows-headless)). See
-   [Services](https://www.twingate.com/docs/services). The proxy matches a
-   service account by the groups in its Twingate token, like a user.
-4. For people, install the [Twingate Client](https://www.twingate.com/download)
+   [Services](https://www.twingate.com/docs/services). The proxy treats a
+   service account like a user: same access level, and its name in the log.
+3. For people, install the [Twingate Client](https://www.twingate.com/download)
    on the machine that runs the script or agent and sign in.
 
 ### Step 5: Test
@@ -460,8 +460,8 @@ Resource, run:
 curl http://ha-api.int/api/
 ```
 
-Do not pass an `Authorization` header. The expected response, for a caller
-with the Read or Full grant, is:
+Do not pass an `Authorization` header. The expected response, with
+**Allow reading** or **Allow changes (write)** on, is:
 
 ```json
 {"message": "API running."}
@@ -476,23 +476,29 @@ example:
 Proxy: alice@example.com [read] GET /api/states -> 200 in 14 ms
 ```
 
-A request your grants do not allow is answered with `403 Forbidden`. For
-example, with `mcp_groups` empty, `curl http://ha-api.int/api/mcp` returns:
+The word in brackets is the access level, the same for every caller:
+`read`, `mcp`, `read+mcp`, `write` or `none`.
+
+A request outside the access level is answered with `403 Forbidden`, which
+names the toggle that would allow it. For example, with **Allow MCP** off,
+`curl http://ha-api.int/api/mcp` returns:
 
 ```json
-{"message": "Forbidden: your Twingate groups do not have a grant in the Twingate Gateway add-on that allows this request."}
+{"message": "Forbidden: this request needs 'Allow MCP' in the Twingate Gateway add-on."}
 ```
 
-To allow it, add one of the caller's Twingate groups to `mcp_groups` (or to
-`full_groups` for everything that is not always blocked), save, and restart
-the add-on. The add-on log shows the caller's grants in brackets, for
-example `Proxy: alice@example.com [read] GET /api/mcp -> 403 (denied) in 2 ms`;
+To allow it, turn on **Allow MCP** on the add-on's **Configuration** tab (or
+**Allow changes (write)** for everything that is not always blocked), save,
+and restart the add-on; it then applies to everyone with access to the
+Resource. The add-on log names the toggle too, for example
+`Proxy: alice@example.com [read] GET /api/mcp -> 403 (denied) in 2 ms; needs 'Allow MCP'`;
 see [`403 Forbidden` from the proxy](#403-forbidden-from-the-proxy).
 
 ### Step 6: Use the WebSocket API (optional)
 
 Home Assistant's WebSocket API at `ws://ha-api.int/api/websocket` works
-through the proxy, with the Read or Full grant. Clients go through the normal
+through the proxy, with **Allow reading** or **Allow changes (write)** on;
+otherwise opening it gets `403 Forbidden`. Clients go through the normal
 authentication exchange, with any non-empty text as the access token: the
 proxy identified the caller already, by its Twingate token. This has not yet
 been tried on a real installation.
@@ -503,10 +509,11 @@ been tried on a real installation.
 3. The proxy answers `{"type": "auth_ok", "ha_version": "..."}`, or
    `auth_invalid` for an empty or malformed message, as Home Assistant does.
 
-After that the client sends commands as usual. A command the caller's grants
-do not allow gets an error result for its `id`, in Home Assistant's form
-(`"success": false`, `"code": "unauthorized"`), and the connection stays
-open. Client libraries that ask for a long-lived token accept the
+After that the client sends commands as usual. A command outside the access
+level gets an error result for its `id`, in Home Assistant's form
+(`"success": false`, `"code": "unauthorized"`, with a message such as
+`Unauthorized: call_service needs 'Allow changes (write)' in the Twingate Gateway add-on.`),
+and the connection stays open. Client libraries that ask for a long-lived token accept the
 placeholder. The connection closes when the caller's Twingate token expires;
 reconnect then.
 
@@ -519,7 +526,7 @@ Connecting an MCP client has not yet been tried on a real installation.
    and select **Enable** on the **Model Context Protocol** card if it is
    shown.
 2. Choose what the endpoint exposes. The proxy passes the main URL
-   `/api/mcp` to callers with the MCP grant; **what it offers is set in Home
+   `/api/mcp` on when **Allow MCP** is on; **what it offers is set in Home
    Assistant, not by the proxy.** By default it exposes all sets of AI tools,
    including the **Home Assistant** set, which can read all entities, logs
    and history and has a tool (`homeassistant__call_action`) that performs
@@ -531,7 +538,9 @@ Connecting an MCP client has not yet been tried on a real installation.
    **Voice assistants**, on the **Expose** tab.
    **Require an administrator account** can stay on: the proxy acts as Home
    Assistant's Supervisor user, an administrator.
-3. Give the agent's Twingate group the MCP grant (`mcp_groups`).
+3. On the add-on's **Configuration** tab, turn on **Allow MCP**, save and
+   restart the add-on. MCP is then open to everyone with access to the
+   Resource, not only to the agent (see [API access](#api-access)).
 4. Add the server to your MCP client with the alias URL and no
    authentication. For example, with Claude Code:
 
@@ -544,7 +553,8 @@ Connecting an MCP client has not yet been tried on a real installation.
 
 Other MCP clients that support the Streamable HTTP transport work the same
 way. The individual URLs `/api/mcp/<id>`, such as `/api/mcp/assist`, need
-the Full grant: they would let MCP callers bypass the main URL's settings.
+**Allow changes (write)**: they would let MCP callers bypass the main URL's
+settings.
 Whatever Home Assistant exposes, the proxy refuses for every caller calls
 to the Supervisor integration's MCP tools (`hassio__...`, which read the
 logs of the host and of every add-on through the Supervisor) and calls of
@@ -572,37 +582,48 @@ stays the same when you update, rebuild or restart the add-on, change its
 options, or restore a backup with the same repository URL. See
 [Moving to another repository URL or reinstalling](#moving-to-another-repository-url-or-reinstalling).
 
-## Access rules
+## API access
 
-Three options give Twingate groups grants for the proxy:
+Three toggles on the add-on's **Configuration** tab set what callers may do
+through the proxy:
 
-| Grant | Option | Allows | When the option is empty |
+| Toggle | Option | Default | Allows |
 | --- | --- | --- | --- |
-| Read | `read_groups` | Reads over REST and WebSocket, no actions, no templates | Everyone with access to the Resource has it |
-| MCP | `mcp_groups` | `/api/mcp`, every method; what it can do is set in Home Assistant's MCP Server settings (by default: any action on any entity) | Nobody has it |
-| Full | `full_groups` | Everything that is not always blocked; includes Read and MCP | Nobody has it |
+| **Allow reading** | `allow_read` | On | Reads over REST and WebSocket, no actions, no templates |
+| **Allow MCP** | `allow_mcp` | Off | `/api/mcp`, every method; what it can do is set in Home Assistant's MCP Server settings (by default: any action on any entity) |
+| **Allow changes (write)** | `allow_write` | Off | Everything that is not always blocked, reading and MCP included |
 
-- A caller holds the grants of all its Twingate groups together. Read and
-  MCP are independent: MCP does not include Read, and Read does not include
-  MCP.
-- **Read is open by default.** With `read_groups` empty, anyone Twingate lets
-  through can read all states. Once `read_groups` names at least one group,
-  a caller in none of the three lists gets `403 Forbidden` for everything.
-- Group names are matched exactly, including letter case, against the groups
-  in the caller's Twingate token.
-- The add-on logs the effective rules at every start, for example
-  `Proxy access rule: Read: everyone with access to the Resource`, and the
-  Web UI shows them.
+- **One access level for everyone.** The toggles apply to every caller
+  whose Twingate token the proxy verifies, that is, to everyone who has
+  access to the Resource in Twingate. The proxy does not look at Twingate
+  groups. The add-on cannot give different people different access: decide
+  in Twingate who gets the Resource, and give it only to the people and
+  agents that may do everything the toggles allow.
+- **Write includes the others.** With **Allow changes (write)** on, reading
+  and MCP are allowed as well, and the other two toggles make no
+  difference. Reading and MCP are independent of each other: MCP does not
+  include reading, and reading does not include MCP.
+- **Reading is on by default.** Anyone Twingate lets through can read all
+  states. Turn it off if callers only need MCP.
+- **All off** refuses every request with `403 Forbidden`, and the add-on
+  logs a warning at start. The request header setup is not affected.
+- A request outside the access level gets `403 Forbidden` with the toggle
+  that would allow it, for example
+  `Forbidden: this request needs 'Allow changes (write)' in the Twingate Gateway add-on.`;
+  a WebSocket command gets an error result with the same hint.
+- The add-on logs the access level at every start, for example
+  `API access for every caller of the Resource: read, MCP.`, and the Web UI
+  shows it under **API access**.
 - Every caller acts as the same Home Assistant user, the built-in
   **Supervisor** user, which is an administrator. Home Assistant's own
   permissions therefore do not apply per person, and Home Assistant's logs
   and history show the Supervisor user. The add-on log and the Web UI record
   who made each request.
 
-### Read
+### Reading
 
-Read is an allow-list: everything not listed is denied, including commands
-that a later Home Assistant release adds.
+Reading is an allow-list: everything not listed is denied, including
+commands that a later Home Assistant release adds.
 
 REST (`HEAD` is allowed wherever `GET` is):
 
@@ -639,30 +660,30 @@ for right after connecting), `config/entity_registry/list`, `config/entity_regis
 `repairs/list_issues`, `lovelace/config`, `lovelace/dashboards/list` and
 `lovelace/info`.
 
-Deliberately not in Read, although they change nothing: the event stream
+Deliberately not in reading, although they change nothing: the event stream
 `/api/stream` and subscriptions to all events (they carry the data of every
 action, including codes), logs and diagnostics (`/api/error_log`,
 `system_log/list`, traces), camera and image proxies and anything that
 returns URLs that work like credentials (`camera/stream`,
 `media_source/resolve_media`, `auth/sign_path`), and the configuration of
 automations and scripts (it can hold codes and webhook IDs, and anyone who
-knows a webhook ID can trigger it). Webhooks (`/api/webhook/...`) need Full,
-because calling one runs automations. Templates (`POST /api/template`,
-`render_template`) need Full too: a template cannot act, but an expensive
-one can keep Home Assistant busy.
+knows a webhook ID can trigger it). Webhooks (`/api/webhook/...`) need
+**Allow changes (write)**, because calling one runs automations. Templates
+(`POST /api/template`, `render_template`) need it too: a template cannot
+act, but an expensive one can keep Home Assistant busy.
 
-Read sees every state with all its attributes. Some attributes work like
+Reading shows every state with all its attributes. Some attributes work like
 credentials outside the proxy: for example, the `access_token` of a camera
 entity lets anyone who reaches Home Assistant directly fetch that camera's
 images.
 
 ### MCP
 
-The MCP grant allows the path `/api/mcp` with every method the Supervisor
+**Allow MCP** allows the path `/api/mcp` with every method the Supervisor
 passes on (`GET`, `POST`, `DELETE`). **What an MCP client can do is what
 Home Assistant's MCP Server settings expose** (see step 7). With their
 defaults that includes `homeassistant__call_action`, which performs any
-action on any entity, so the MCP grant is then close to Full for actions; it
+action on any entity, so MCP is then close to write access for actions; it
 is limited to the entities exposed to Assist only if you configure the MCP
 Server integration that way.
 
@@ -675,15 +696,16 @@ Supervisor integration's tools (`hassio__...`), and calls of any
 not given as plain text `domain.action`; the client gets a JSON-RPC error.
 It does not look into other tools.
 
-### Full
+### Write
 
-Full allows every request that is not always blocked. The Supervisor passes
-on `GET`, `HEAD`, `POST` and `DELETE` only; other methods get
+**Allow changes (write)** allows every request that is not always blocked,
+including everything reading and MCP allow. The Supervisor passes on `GET`,
+`HEAD`, `POST` and `DELETE` only; other methods get
 `405 Method Not Allowed`.
 
 ### Always blocked
 
-Blocked for every caller, Full included, because they lead from Home
+Blocked for every caller, write included, because they lead from Home
 Assistant into the Supervisor or the host, manage accounts and credentials,
 or restore the system:
 
@@ -713,12 +735,13 @@ decoding. Paths that could mean something else after another decoding
 (encoded slashes, dots, percent signs, question marks or hashes, empty
 segments) are refused with `400 Bad Request`.
 
-**Full is not a security boundary.** It is a block-list on an administrator
-API, and there are indirect routes to the blocked actions: an automation or
-script that calls them, the update entities and switches of add-ons that
-Home Assistant's Supervisor integration provides, `shell_command` actions,
-and more. Give Full only to people and agents you would trust with an
-administrator account.
+**Write is not a security boundary.** It is a block-list on an
+administrator API, and there are indirect routes to the blocked actions: an
+automation or script that calls them, the update entities and switches of
+add-ons that Home Assistant's Supervisor integration provides,
+`shell_command` actions, and more. Turn on **Allow changes (write)** only if
+everyone with access to the Resource is a person or agent you would trust
+with an administrator account.
 
 ## Alternative: a long-lived token in a request header
 
@@ -758,7 +781,7 @@ To set it up:
    [12:00:00] INFO: Request headers injected into Web App requests: Authorization (values are not logged).
    ```
 
-The group options do not apply to this setup; the proxy only handles
+The access toggles do not apply to this setup; the proxy only handles
 requests for a Resource that points at it. Both setups can be used side by
 side on one Gateway, with two Resources.
 
@@ -777,9 +800,12 @@ so you can switch when it suits you. Updating an existing installation from
 0.2.0 to 0.3.0 in place has not yet been tried on a real installation.
 
 1. Update the add-on to 0.3.0 or later.
-2. On the **Configuration** tab, set `read_groups`, `mcp_groups` and
-   `full_groups` (see [Access rules](#access-rules)). Leave
-   `request_headers` as it is for now. Save and restart the add-on.
+2. On the **Configuration** tab, set the access toggles (see
+   [API access](#api-access)). In the request header setup every caller had
+   all the rights of the token's user; with the proxy and the defaults,
+   callers can only read. Turn on **Allow MCP** for MCP clients, or
+   **Allow changes (write)** if callers need to act. Leave `request_headers`
+   as it is for now. Save and restart the add-on.
 3. In the Web UI, note the **Gateway address** and the address under
    **API proxy Resource** in **Setup** (see
    [The add-on's host name](#the-add-ons-host-name)).
@@ -895,16 +921,17 @@ one line, so a closed section still tells the essential fact:
 
 - **API proxy requests** (for example `12 requests, 2 denied, 1 blocked,
   3 users`): the newest 100 requests and WebSocket commands the proxy
-  handled, with time, Twingate user, grant, request, decision (allowed,
-  denied, blocked, no valid token, too many at once), status and duration,
-  and the counts since the proxy started.
+  handled, with time, Twingate user, request, decision (allowed, with the
+  toggle that allowed it, such as `Allowed (Read)`; denied; blocked; no
+  valid token; too many at once), status and duration, and the counts since
+  the proxy started.
 - **Gateway requests** (for example `40 requests, 3 × 4xx, 2 users`): the
   newest 100 requests through the Gateway, from its audit log, with time,
   Twingate user, method, path, status and duration. Requests through the API
   proxy appear in both lists.
-- **Access rules** (for example `Read: everyone · MCP: Home Agents · Full:
-  Home Admins`): which groups hold Read, MCP and Full, and what each grant
-  allows.
+- **API access** (for example `Read on · MCP off · Write off`): the three
+  toggles, what each allows, and that they apply to everyone with access to
+  the Resource. With all three off, its header shows `All off`.
 - **Setup** (the Gateway address and the CA fingerprint): the Gateway address
   to register in Twingate, with the add-on's host name and port `8443`, the
   API proxy's Resource address and upstream port, and the CA certificate with
@@ -1017,11 +1044,9 @@ Example configuration:
 ```yaml
 network: <network>
 log_level: info
-read_groups: []
-mcp_groups:
-  - Home Agents
-full_groups:
-  - Home Admins
+allow_read: true
+allow_mcp: false
+allow_write: false
 request_headers: []
 certificate_ip_addresses: []
 audit_log: addon_log
@@ -1046,15 +1071,15 @@ Level of the Gateway's system log: `debug`, `info` (default), `warn` or
 `error`. It does not affect the audit log, the API proxy's request log or the
 add-on's own startup messages.
 
-### Options: `read_groups`, `mcp_groups` and `full_groups`
+### Options: `allow_read`, `allow_mcp` and `allow_write`
 
-Lists of Twingate group names that get the Read, MCP and Full grants of the
-API proxy; see [Access rules](#access-rules). Names are matched exactly,
-including letter case; spaces around a name are removed, and each name
-counts once. A name may not be empty or contain line breaks.
+The toggles **Allow reading**, **Allow MCP** and **Allow changes (write)**
+of the API proxy; see [API access](#api-access). They apply to everyone who
+has access to the Resource in Twingate. **Allow changes (write)** includes
+the other two.
 
-Default: all three empty, which means everyone with access to the Resource
-has Read, and nobody has MCP or Full.
+Default: reading on, MCP and write off. With all three off, the proxy
+refuses every request.
 
 ### Option: `request_headers`
 
@@ -1319,9 +1344,9 @@ and is not stored in the options or in backups. Inside the add-on, only the
 proxy's own user (`api-proxy`) and root have it; it is never logged and never
 shown in the Web UI.
 
-The access rules are applied by the proxy, so a mistake in them is an access
-control mistake. Read and MCP are allow-lists; Full is a block-list and not
-a security boundary (see [Always blocked](#always-blocked)).
+The access level is applied by the proxy, so a mistake in its rules is an
+access control mistake. Reading and MCP are allow-lists; write is a
+block-list and not a security boundary (see [Always blocked](#always-blocked)).
 
 ### How the proxy knows the caller
 
@@ -1332,7 +1357,8 @@ does: an ES256 signature by one of the network's signing keys (from
 `https://<network>.twingate.com/api/v1/jwk/ec`, read again every hour and
 when a token names a key it does not know, at most once a minute), the
 issuer, the network as audience, the expiry, and the token type and version.
-The username and groups come only from the verified token. A request without
+The username comes only from the verified token; the groups in it are not
+used. A request without
 a valid token gets `401 Unauthorized` and nothing else; the add-on log names
 the reason, at most once a minute per address.
 
@@ -1391,17 +1417,23 @@ Gateway.
 ### Twingate access is the first gate
 
 Twingate decides who reaches the Resource at all: users, groups, service
-accounts, device and policy checks. Then the proxy decides what each caller
-may do. In the request header setup, the token's rights apply to everyone
-Twingate lets through.
+accounts, device and policy checks. **Everyone it lets through has the same
+access level**, the one set with the toggles; the proxy tells callers apart
+only in its log. In the request header setup, the token's rights apply to
+everyone Twingate lets through in the same way.
 
-- Grant the Resource only to the groups and service accounts that need it.
-- Remember that an empty `read_groups` gives everyone with access to the
-  Resource Read.
+- Grant the Resource only to the users, groups and service accounts that
+  may do everything the toggles allow.
+- To give different people different access, the add-on cannot help:
+  Twingate decides who gets the Resource, and everyone who gets it has the
+  same access. Keep callers who should do less off the Resource.
+- Remember that reading is on by default: everyone with access to the
+  Resource can read all states.
 - To revoke one caller, remove its access in Twingate. Connections already
   open close when their Twingate access token expires.
-- To revoke everyone at once, stop the add-on (or, in the request header
-  setup, delete the long-lived token in Home Assistant).
+- To revoke everyone at once, stop the add-on, or turn off all three
+  toggles and restart it (in the request header setup, delete the
+  long-lived token in Home Assistant).
 
 ### Keep browser access to Home Assistant separate
 
@@ -1450,9 +1482,9 @@ entries that the add-on keeps for the Web UI's relay with
 each entry, without headers or query string and with webhook IDs masked.
 
 The proxy logs one line per request and per WebSocket command with the
-Twingate username, its grants, the method and path (without the query string,
-webhook IDs masked) and the outcome, and a summary when a WebSocket
-connection closes. It never logs headers, tokens or message contents.
+Twingate username, the access level, the method and path (without the query
+string, webhook IDs masked) and the outcome (for a refused request, the
+toggle it needs), and a summary when a WebSocket connection closes. It never logs headers, tokens or message contents.
 
 ### Network exposure
 
@@ -1491,10 +1523,9 @@ Assistant backups of the add-on, so protect your backups.
 ### The add-on stops right after starting
 
 Read the **Log** tab. The add-on validates its options and logs an error such
-as `Option 'network' must be your Twingate network name...`,
-`request_headers entry 1 (Authorization): 'value' is required` or
-`read_groups entry 2: is empty`, then stops. Fix the option and start the
-add-on again.
+as `Option 'network' must be your Twingate network name...` or
+`request_headers entry 1 (Authorization): 'value' is required`, then stops.
+Fix the option and start the add-on again.
 
 ### Clients cannot connect after the CA changed
 
@@ -1585,13 +1616,19 @@ rewrite for `X-Twingate-Gateway-Token`. When the log says
 
 ### `403 Forbidden` from the proxy
 
-The caller's Twingate groups have no grant that allows the request. The
-add-on log shows the caller's grants in brackets, for example
-`Proxy: bob@example.com [mcp] GET /api/states -> 403 (denied)`. Check the
-group names in `read_groups`, `mcp_groups` and `full_groups` against the
-groups in Twingate, including letter case. `blocked for every caller` means
-the request is [always blocked](#always-blocked), or came from a web page of
-another site (see [Web pages of other sites](#web-pages-of-other-sites)).
+The request is outside the access level set with the toggles. The answer
+names the toggle that would allow it, for example
+`Forbidden: this request needs 'Allow reading' in the Twingate Gateway add-on.`,
+and so does the add-on log, which shows the access level in brackets:
+`Proxy: bob@example.com [mcp] GET /api/states -> 403 (denied) in 1 ms; needs 'Allow reading'`.
+Turn that toggle on in the add-on's **Configuration** tab and restart the
+add-on, keeping in mind that it then applies to everyone with access to the
+Resource. If the log at start says
+`API access for every caller of the Resource: none`, all three toggles are
+off. `Forbidden: blocked by the Twingate Gateway add-on for every caller.`
+(`blocked for every caller` in the log) means the request is
+[always blocked](#always-blocked), or came from a web page of another site
+(see [Web pages of other sites](#web-pages-of-other-sites)).
 
 ### WebSocket clients get `auth_invalid`
 
@@ -1629,9 +1666,10 @@ Home Assistant rejected the token. Check that:
 
 ### MCP client gets `403 Forbidden` or `401 Unauthorized`
 
-- With the API proxy, `403`: the caller's groups have no MCP grant (Read
-  does not include MCP), or it used `/api/mcp/<id>`, which needs Full.
-  `400`: the client did not send `Content-Type: application/json` in UTF-8.
+- With the API proxy, `403`: **Allow MCP** is off (reading does not include
+  MCP), or the client used `/api/mcp/<id>`, which needs
+  **Allow changes (write)**; the message names the toggle. `400`: the
+  client did not send `Content-Type: application/json` in UTF-8.
 - In the request header setup, `403`: the token's user is not an
   administrator, and the endpoint requires one. That is the default for
   `/api/mcp`, and always the case when it exposes the **Home Assistant** set

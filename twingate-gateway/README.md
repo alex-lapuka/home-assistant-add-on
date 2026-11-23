@@ -10,11 +10,12 @@ credential.
 It runs the [Twingate Gateway](https://github.com/Twingate/gateway) in Web App
 mode, together with a proxy that reaches Home Assistant through the
 Supervisor, so no long-lived token is needed. The proxy identifies each caller
-by its Twingate token and gives Twingate groups Read, MCP or Full access to
-the REST API, the Model Context Protocol endpoint `/api/mcp` and the WebSocket
-API. Access to the Resource is granted and revoked in Twingate per user,
-group or service account. It works together with the Twingate Connector
-add-on from this repository.
+by its Twingate token and logs it. Three toggles in the add-on options set
+what every caller may do: read (REST and WebSocket), use the Model Context
+Protocol endpoint `/api/mcp`, or make changes. Who may use the API at all is
+decided in Twingate, by granting and revoking access to the Resource per
+user, group or service account. It works together with the Twingate
+Connector add-on from this repository.
 
 This add-on is experimental. For setup, see the [documentation](DOCS.md) (the
 **Documentation** tab in Home Assistant).

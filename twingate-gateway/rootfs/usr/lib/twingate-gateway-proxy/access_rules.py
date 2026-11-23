@@ -1,24 +1,27 @@
 """Access rules of the Home Assistant API proxy in the Twingate Gateway add-on.
 
 Every caller acts as the same Home Assistant user (the Supervisor's system
-user, an administrator), so the proxy decides what each caller may do, from
-the Twingate groups in its verified Gateway Access Token:
+user, an administrator), so the proxy decides what may be done. One access
+level applies to every caller whose Twingate Gateway Access Token the proxy
+verified, set with three toggles of the add-on options:
 
-- Read (option read_groups): reads over REST and WebSocket, no actions. An
-  allow-list: only the REST requests and WebSocket command types listed
-  below; everything else is denied. With read_groups empty, every verified
-  caller has Read.
-- MCP (option mcp_groups): the Model Context Protocol endpoint /api/mcp,
-  every method. Nobody when empty.
-- Full (option full_groups): everything that is not always blocked;
-  includes Read and MCP. Nobody when empty.
+- Read (option allow_read, on by default): reads over REST and WebSocket, no
+  actions. An allow-list: only the REST requests and WebSocket command types
+  listed below; everything else is denied.
+- MCP (option allow_mcp): the Model Context Protocol endpoint /api/mcp,
+  every method.
+- Write (option allow_write): everything that is not always blocked;
+  includes Read and MCP, so the other two toggles make no difference while
+  it is on.
 
-A caller holds the union of the grants of all its groups. Read and MCP are
-independent. Some requests are blocked for everyone, Full included, because
-they lead from Home Assistant into the Supervisor or the host, or manage
-accounts and credentials (see ALWAYS_BLOCKED_*). Full is a block-list on an
-administrator API: indirect routes to a blocked action remain (for example a
-script or automation that calls it), so it is not a security boundary.
+Read and MCP are independent. With all three off, every request is denied.
+Who may use the API at all is decided in Twingate, by who has access to the
+Resource; the groups in the token play no part here. Some requests are
+blocked for everyone, Write included, because they lead from Home Assistant
+into the Supervisor or the host, or manage accounts and credentials (see
+ALWAYS_BLOCKED_*). Write is a block-list on an administrator API: indirect
+routes to a blocked action remain (for example a script or automation that
+calls it), so it is not a security boundary.
 
 The lists were checked against Home Assistant Core 2026.11.2. Python
 standard library only, so that the rules can be tested anywhere.
@@ -28,59 +31,55 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from urllib.parse import unquote
-
-if TYPE_CHECKING:
-    from collections.abc import Iterable
 
 READ = "read"
 MCP = "mcp"
-FULL = "full"
-GRANT_ORDER = (FULL, READ, MCP)
+WRITE = "write"
+
+# The toggles of the add-on options as the Configuration tab names them, by
+# the grant each one turns on.
+TOGGLE_NAMES = {READ: "Allow reading", MCP: "Allow MCP", WRITE: "Allow changes (write)"}
 
 # ----------------------------------------------------------------------------
 # Grants
 # ----------------------------------------------------------------------------
 
 
-class Rules:
-    """The three group lists of the add-on options."""
+def grants_from_options(allow_read: object, allow_mcp: object, allow_write: object) -> frozenset[str]:
+    """The grants of every verified caller, from the three toggles.
 
-    def __init__(self, read_groups: Iterable[str], mcp_groups: Iterable[str], full_groups: Iterable[str]) -> None:
-        self.read_groups = frozenset(read_groups)
-        self.mcp_groups = frozenset(mcp_groups)
-        self.full_groups = frozenset(full_groups)
-
-    def grants(self, groups: Iterable[str]) -> frozenset[str]:
-        """The union of the grants of all the caller's groups."""
-        member = {group for group in groups if isinstance(group, str)}
-        grants: set[str] = set()
-        if not self.read_groups or member & self.read_groups:
-            grants.add(READ)
-        if member & self.mcp_groups:
-            grants.add(MCP)
-        if member & self.full_groups:
-            grants.update((READ, MCP, FULL))
-        return frozenset(grants)
-
-    def describe(self) -> list[str]:
-        """One line per grant, for the add-on log."""
-
-        def names(groups: frozenset[str]) -> str:
-            return ", ".join(f'"{group}"' for group in sorted(groups))
-
-        read = f"members of {names(self.read_groups)}" if self.read_groups else "everyone with access to the Resource"
-        mcp = f"members of {names(self.mcp_groups)}" if self.mcp_groups else "nobody"
-        full = f"members of {names(self.full_groups)}" if self.full_groups else "nobody"
-        return [f"Read: {read}", f"MCP: {mcp}", f"Full (includes Read and MCP): {full}"]
+    A toggle is on only for the value True: a missing or non-boolean value
+    counts as off. Write includes Read and MCP.
+    """
+    grants: set[str] = set()
+    if allow_read is True:
+        grants.add(READ)
+    if allow_mcp is True:
+        grants.add(MCP)
+    if allow_write is True:
+        grants.update((READ, MCP, WRITE))
+    return frozenset(grants)
 
 
 def grant_label(grants: frozenset[str]) -> str:
-    """A short label of a caller's grants for logs: full, read+mcp, read, mcp or none."""
-    if FULL in grants:
-        return FULL
+    """A short label of the grants for logs: write, read+mcp, read, mcp or none."""
+    if WRITE in grants:
+        return WRITE
     return "+".join(grant for grant in (READ, MCP) if grant in grants) or "none"
+
+
+def describe_grants(grants: frozenset[str]) -> str:
+    """The access level in words, for the add-on log."""
+    if WRITE in grants:
+        return "write (everything that is not always blocked, including read and MCP)"
+    return ", ".join(name for grant, name in ((READ, "read"), (MCP, "MCP")) if grant in grants) or "none (every request is refused)"
+
+
+def forbidden_message(grant: str) -> str:
+    """The 403 message for a request outside the access level: the toggle that allows it."""
+    return f"Forbidden: this request needs '{TOGGLE_NAMES[grant]}' in the Twingate Gateway add-on."
 
 
 # ----------------------------------------------------------------------------
@@ -259,16 +258,29 @@ def rest_is_read(method: str, path: str) -> bool:
 
 
 def decide_rest(method: str, path: str, grants: frozenset[str]) -> tuple[bool, str]:
-    """Whether a REST request is allowed, and why: blocked, mcp, full, read or denied."""
+    """Whether a REST request is allowed, and why: blocked, mcp, write, read or denied."""
     if rest_always_blocked(path):
         return False, "blocked"
     if path == MCP_PATH:
         return (MCP in grants), ("mcp" if MCP in grants else "denied")
-    if FULL in grants:
-        return True, "full"
+    if WRITE in grants:
+        return True, "write"
     if READ in grants and rest_is_read(method, path):
         return True, "read"
     return False, "denied"
+
+
+def rest_needed_grant(method: str, path: str) -> str:
+    """The grant whose toggle allows a REST request that is not always blocked.
+
+    The smallest one: MCP for /api/mcp, Read for the allow-list, Write for
+    everything else (Write allows the other two as well).
+    """
+    if path == MCP_PATH:
+        return MCP
+    if rest_is_read(method, path):
+        return READ
+    return WRITE
 
 
 # ----------------------------------------------------------------------------
@@ -523,14 +535,27 @@ def _decide_ws_command(command: dict, grants: frozenset[str]) -> tuple[bool, str
         return False, "blocked"
     if command_type == "execute_script" and script_blocked(command.get("sequence")):
         return False, "blocked"
-    if FULL in grants:
-        return True, "full"
-    if READ in grants and command_type in READ_WS:
-        event_type = command.get("event_type")
-        if command_type == "subscribe_events" and not (isinstance(event_type, str) and event_type in READ_EVENT_TYPES):
-            return False, "denied"
+    if WRITE in grants:
+        return True, "write"
+    if READ in grants and ws_is_read(command):
         return True, "read"
     return False, "denied"
+
+
+def ws_is_read(command: dict) -> bool:
+    """Whether a command is on the Read allow-list (subscribe_events only for READ_EVENT_TYPES)."""
+    command_type = command.get("type")
+    if not isinstance(command_type, str) or command_type not in READ_WS:
+        return False
+    if command_type != "subscribe_events":
+        return True
+    event_type = command.get("event_type")
+    return isinstance(event_type, str) and event_type in READ_EVENT_TYPES
+
+
+def ws_needed_grant(command: dict) -> str:
+    """The grant whose toggle allows a WebSocket command that is not always blocked: Read or Write."""
+    return READ if ws_is_read(command) else WRITE
 
 
 def well_formed(command: object) -> bool:
@@ -547,10 +572,12 @@ def error_result(command_id: object, code: str, message: str) -> dict:
     return {"id": command_id, "type": "result", "success": False, "error": {"code": code, "message": message}}
 
 
-def denial_message(reason: str, command_type: str) -> str:
+def denial_message(reason: str, command: dict) -> str:
+    """The error message for a refused well-formed command: blocked, or the toggle that allows it."""
+    command_type = command["type"]
     if reason == "blocked":
         return f"Unauthorized: {command_type} is blocked by the Twingate Gateway add-on for every caller."
-    return f"Unauthorized: {command_type} needs another grant in the Twingate Gateway add-on."
+    return f"Unauthorized: {command_type} needs '{TOGGLE_NAMES[ws_needed_grant(command)]}' in the Twingate Gateway add-on."
 
 
 class FrameDecision:
@@ -597,7 +624,7 @@ def decide_ws_frame(text: str, grants: frozenset[str]) -> FrameDecision:
         if allowed:
             kept.append(item)
         else:
-            decision.replies.append(error_result(item["id"], "unauthorized", denial_message(reason, item["type"])))
+            decision.replies.append(error_result(item["id"], "unauthorized", denial_message(reason, item)))
     if kept:
         if len(kept) == len(items):
             decision.forward = text

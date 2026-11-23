@@ -24,21 +24,21 @@ map:
     read_only: false
 options:
   log_level: info
-  read_groups: []
-  mcp_groups: []
-  full_groups: []
+  # The API proxy's access level, the same for every caller that Twingate
+  # lets through to its Resource: reading, MCP, and changes (write), which
+  # includes the other two. All off: every API request is refused.
+  allow_read: true
+  allow_mcp: false
+  allow_write: false
   request_headers: []
   certificate_ip_addresses: []
   audit_log: addon_log
 schema:
   network: str
   log_level: list(debug|info|warn|error)
-  read_groups:
-    - str
-  mcp_groups:
-    - str
-  full_groups:
-    - str
+  allow_read: bool
+  allow_mcp: bool
+  allow_write: bool
   request_headers:
     - name: str
       value: password

@@ -5,10 +5,10 @@
 # The Gateway forwards requests for a Web App Resource that points at this
 # add-on (its host name, or the host's IP address and the published port) to
 # the proxy on port 8124. The proxy verifies the caller's Twingate token,
-# applies the access rules of the add-on options and passes allowed requests
-# to Home Assistant through the Supervisor, with the add-on's Supervisor
-# token. It waits until /run.sh has written its configuration
-# (/run/twingate-gateway-proxy/config.json).
+# applies the access level of the add-on options (the same for every
+# caller) and passes allowed requests to Home Assistant through the
+# Supervisor, with the add-on's Supervisor token. It waits until /run.sh
+# has written its configuration (/run/twingate-gateway-proxy/config.json).
 #
 # It runs as its own unprivileged user, api-proxy, with an empty
 # environment. It is the only process besides root that gets the Supervisor

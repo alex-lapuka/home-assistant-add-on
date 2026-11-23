@@ -59,7 +59,7 @@ NETWORK_CHECK="unreachable"
 NETWORK_CHECK_STATUS=""
 GATEWAY_LOG_LEVEL=""
 HEADERS_JSON="{}"
-GROUPS_JSON='{"read":[],"mcp":[],"full":[]}'
+ACCESS_JSON='{"read":false,"mcp":false,"write":false}'
 PROXY_HOSTNAMES_JSON="[]"
 PROXY_HOSTNAME=""
 PROXY_HOST_PORT=""
@@ -110,37 +110,14 @@ def entry_title($i):
   | "request_headers: header '\(.[0].name)' is set more than once (header names are case-insensitive)")
 JQ
 
-# jq program over the add-on options that prints one line per invalid entry
-# of read_groups, mcp_groups and full_groups, or nothing when all are valid.
-read -r -d '' JQ_GROUP_PROBLEMS <<'JQ' || true
-def problems($option):
-  (.[$option] // []) as $list
-  | if ($list | type) != "array" then
-      "\($option): must be a list of Twingate group names"
-    else
-      $list | to_entries[] | .key as $i | .value
-      | if type != "string" then
-          "\($option) entry \($i + 1): must be a Twingate group name"
-        elif (gsub("^\\s+|\\s+$"; "") == "") then
-          "\($option) entry \($i + 1): is empty"
-        elif (explode | any(. < 32 or . == 127)) then
-          "\($option) entry \($i + 1): must not contain line breaks or other control characters"
-        elif length > 256 then
-          "\($option) entry \($i + 1): is longer than 256 characters"
-        else
-          empty
-        end
-    end;
-problems("read_groups"), problems("mcp_groups"), problems("full_groups")
-JQ
-
-# jq program that turns the valid group options into {read, mcp, full}: names
-# without surrounding spaces, each once, in the order given.
-read -r -d '' JQ_GROUPS <<'JQ' || true
-def names($option):
-  reduce ((.[$option] // [])[] | gsub("^\\s+|\\s+$"; "")) as $name ([];
-    if index([$name]) then . else . + [$name] end);
-{read: names("read_groups"), mcp: names("mcp_groups"), full: names("full_groups")}
+# jq program over ACCESS_JSON that prints the access level of the Home
+# Assistant API proxy in words, or nothing when all three toggles are off.
+read -r -d '' JQ_ACCESS_LEVEL <<'JQ' || true
+if .write then
+  "write (everything that is not always blocked, including read and MCP)"
+else
+  [(if .read then "read" else empty end), (if .mcp then "MCP" else empty end)] | join(", ")
+end
 JQ
 
 # Reads the version of the Gateway binary, recorded when the image was built,
@@ -218,23 +195,30 @@ read_request_headers() {
     HEADERS_JSON=$(printf '%s' "${raw}" | jq --compact-output --slurp 'map({(.name): .value}) | add // {}')
 }
 
-# Reads 'read_groups', 'mcp_groups' and 'full_groups', the Twingate groups
-# that get the Read, MCP and Full grants of the Home Assistant API proxy,
-# into GROUPS_JSON ({"read": [...], "mcp": [...], "full": [...]}). Group names
-# are matched exactly, with case, against the groups in the caller's
-# Twingate token.
-read_access_groups() {
-    local options problems line
+# Reads the toggles 'allow_read', 'allow_mcp' and 'allow_write' of the Home
+# Assistant API proxy into ACCESS_JSON ({"read": ..., "mcp": ..., "write":
+# ...}). They set one access level for every caller whose Twingate token the
+# proxy verifies; who that is, is decided in Twingate, by who has access to
+# the Resource. Write includes read and MCP. A toggle is on only when it is
+# the JSON value true: a missing or null one counts as off, and any other
+# value (even the text "true") stops the add-on. The options come from the
+# Supervisor, which drops options that no longer exist, such as the group
+# lists of development versions of 0.3.0, so they are never read.
+read_api_access() {
+    local options problem
 
     options=$(bashio::app.config) || bashio::exit.nok "Could not read the add-on options."
-    problems=$(jq --raw-output "${JQ_GROUP_PROBLEMS}" <<<"${options}")
-    if [[ -n "${problems}" ]]; then
-        while IFS= read -r line; do
-            bashio::log.error "${line}"
-        done <<<"${problems}"
-        bashio::exit.nok "The group options of the Home Assistant API proxy are invalid, see the errors above."
+    if [[ -z "${options}" ]]; then
+        options="{}"
     fi
-    GROUPS_JSON=$(jq --compact-output "${JQ_GROUPS}" <<<"${options}")
+    problem=$(jq --raw-output '
+        first(("allow_read", "allow_mcp", "allow_write") as $option
+          | select(.[$option] != null and (.[$option] | type) != "boolean")
+          | "Option '\''\($option)'\'' must be true or false.") // empty' <<<"${options}")
+    if [[ -n "${problem}" ]]; then
+        bashio::exit.nok "${problem}"
+    fi
+    ACCESS_JSON=$(jq --compact-output '{read: (.allow_read == true), mcp: (.allow_mcp == true), write: (.allow_write == true)}' <<<"${options}")
 }
 
 # Finds out how the Gateway reaches the proxy: the add-on's host name on the
@@ -276,7 +260,7 @@ read_proxy_network() {
 }
 
 # Writes the configuration of the Home Assistant API proxy: the network, the
-# group options and how the Gateway reaches the proxy. The proxy waits for
+# access toggles and how the Gateway reaches the proxy. The proxy waits for
 # this file at its start. It is readable by the proxy's group only; it holds
 # no secret. The Web UI is not essential, but the proxy is: a failure here is
 # reported, and the Gateway starts anyway for the request_headers setup.
@@ -292,13 +276,13 @@ write_proxy_config() {
         --argjson port "${PROXY_PORT}" \
         --arg host_port "${PROXY_HOST_PORT}" \
         --argjson hostnames "${PROXY_HOSTNAMES_JSON}" \
-        --argjson groups "${GROUPS_JSON}" \
+        --argjson access "${ACCESS_JSON}" \
         '{
             network: $network,
             port: $port,
             host_port: (if $host_port == "" then null else ($host_port | tonumber) end),
             hostnames: $hostnames,
-            groups: $groups
+            access: $access
           }' >"${tmp}" ||
         ! chgrp "${PROXY_USER}" "${tmp}" ||
         ! chmod 0640 "${tmp}" ||
@@ -308,23 +292,22 @@ write_proxy_config() {
     fi
 }
 
-# Logs who holds which grant of the Home Assistant API proxy, and where the
-# Twingate Resource must point for the proxy to accept its callers.
-log_access_rules() {
-    local line rules
+# Logs where the Twingate Resource must point for the Home Assistant API
+# proxy to accept its callers, and the access level, the same for all of
+# them. With all three toggles off, it warns: every request is refused then.
+log_api_access() {
+    local level
 
     bashio::log.info "Home Assistant API proxy on port ${PROXY_PORT}/tcp. Point a Web App Resource at ${PROXY_HOSTNAME:-<add-on host name>}.${SUPERVISOR_DNS_SUFFIX} with upstream port ${PROXY_PORT} to use it without a Home Assistant token."
     if [[ "${PROXY_HOST_PORT_STATE}" == "mapped" ]]; then
         bashio::log.info "The proxy is also published on host port ${PROXY_HOST_PORT}: a Resource with the Home Assistant host's IP address and upstream port ${PROXY_HOST_PORT} works too."
     fi
-    rules=$(jq --raw-output '
-        def names: map("\"" + . + "\"") | join(", ");
-        "Read: " + (if (.read | length) == 0 then "everyone with access to the Resource" else "members of " + (.read | names) end),
-        "MCP: " + (if (.mcp | length) == 0 then "nobody" else "members of " + (.mcp | names) end),
-        "Full (includes Read and MCP): " + (if (.full | length) == 0 then "nobody" else "members of " + (.full | names) end)' <<<"${GROUPS_JSON}")
-    while IFS= read -r line; do
-        bashio::log.info "Proxy access rule: ${line}"
-    done <<<"${rules}"
+    level=$(jq --raw-output "${JQ_ACCESS_LEVEL}" <<<"${ACCESS_JSON}")
+    if [[ -n "${level}" ]]; then
+        bashio::log.info "API access for every caller of the Resource: ${level}."
+    else
+        bashio::log.warning "API access for every caller of the Resource: none. 'Allow reading', 'Allow MCP' and 'Allow changes (write)' are all off, so the Home Assistant API proxy answers 403 Forbidden to every request."
+    fi
 }
 
 # Reads 'certificate_ip_addresses' into STATIC_IPS, a sorted, comma-separated
@@ -888,7 +871,7 @@ write_status() {
         --arg proxy_hostname "${PROXY_HOSTNAME}" \
         --arg proxy_dns_suffix "${SUPERVISOR_DNS_SUFFIX}" \
         --arg token_header "${TOKEN_HEADER}" \
-        --argjson groups "${GROUPS_JSON}" \
+        --argjson access "${ACCESS_JSON}" \
         '{
             schema: 1,
             addon_version: $addon_version,
@@ -922,7 +905,7 @@ write_status() {
               hostname: (if $proxy_hostname == "" then null else $proxy_hostname end),
               dns_name: (if $proxy_hostname == "" then null else ($proxy_hostname + "." + $proxy_dns_suffix) end),
               token_header: $token_header,
-              groups: $groups
+              access: $access
             }
           }' >"${tmp}" ||
         ! chmod 0644 "${tmp}" ||
@@ -946,7 +929,7 @@ main() {
     read_network
     read_log_level
     read_request_headers
-    read_access_groups
+    read_api_access
     read_certificate_ip_addresses
     read_audit_log
     read_proxy_network
@@ -976,7 +959,7 @@ main() {
     # The Connector add-on on this Home Assistant resolves the add-on's host
     # name; a Connector elsewhere needs the host's LAN IP address and host port.
     bashio::log.info "Gateway address for Twingate: ${PROXY_HOSTNAME:-<add-on host name>}.${SUPERVISOR_DNS_SUFFIX}:${GATEWAY_PORT} when the Twingate Connector add-on runs on this Home Assistant; for a Connector elsewhere, the host's LAN IP address with the host port of ${GATEWAY_PORT}/tcp."
-    log_access_rules
+    log_api_access
     header_names=$(jq --raw-output 'keys | join(", ")' <<<"${HEADERS_JSON}")
     if [[ -n "${header_names}" ]]; then
         bashio::log.info "Request headers injected into Web App requests: ${header_names} (values are not logged)."
