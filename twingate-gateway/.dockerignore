@@ -1,2 +1,4 @@
 **/__pycache__
 **/*.pyc
+# Unit tests run in CI (.github/workflows/tests.yaml), not in the image.
+tests

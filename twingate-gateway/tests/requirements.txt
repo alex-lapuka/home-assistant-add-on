@@ -1,0 +1,6 @@
+# What the add-on's Python modules import beyond the standard library, at the
+# versions of the Alpine 3.24 packages the image installs (py3-aiohttp 3.13.5,
+# py3-cryptography 47.0.0). multidict, used by the tests for request headers,
+# comes with aiohttp.
+aiohttp==3.13.5
+cryptography==47.0.0
