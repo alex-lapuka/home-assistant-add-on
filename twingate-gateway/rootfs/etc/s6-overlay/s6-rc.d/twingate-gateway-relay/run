@@ -1,0 +1,34 @@
+#!/bin/sh
+# ==============================================================================
+# Twingate Gateway add-on: audit log relay for the Web UI.
+#
+# The relay follows the audit log and sends summaries of its entries, without
+# headers or query strings, to the Web UI. With audit_log: addon_log it reads
+# the copy that s6-log keeps in memory in /dev/shm/twingate-gateway-audit
+# (see the twingate-gateway-log service). It only reads files, so the Gateway
+# never waits for it; s6 restarts it when it exits. The relay gets an empty
+# environment.
+#
+# It runs as its own unprivileged user, audit-relay, which can read that copy;
+# the Web UI's user (nobody) cannot read it, and none of the users of the
+# relay, the Web UI and s6-log (audit-log) can signal another's processes.
+# With audit_log: file, the relay runs as root instead, because it reads
+# /config/audit.log, which only root can read. That setting is known once
+# /run.sh has written the status file; /run.sh then restarts the relay.
+# ==============================================================================
+set -e
+
+if jq -e '.audit_log == "file"' /run/twingate-gateway/status.json >/dev/null 2>&1; then
+    exec env -i PATH=/usr/bin:/bin LANG=C.UTF-8 \
+        python3 -I /usr/lib/twingate-gateway-ui/audit_relay.py
+fi
+
+# s6-overlay keeps the container environment, including the Supervisor
+# token, in this directory for with-contenv, readable by every user. Only
+# root needs it, so close it before anything runs as another user (the Web
+# UI does the same).
+chmod 0700 /run/s6/container_environment
+
+exec s6-setuidgid audit-relay \
+    env -i PATH=/usr/bin:/bin LANG=C.UTF-8 \
+    python3 -I /usr/lib/twingate-gateway-ui/audit_relay.py

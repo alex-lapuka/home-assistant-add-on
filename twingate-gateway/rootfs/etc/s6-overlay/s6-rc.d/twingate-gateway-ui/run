@@ -1,0 +1,27 @@
+#!/bin/sh
+# ==============================================================================
+# Twingate Gateway add-on: Web UI, served through Home Assistant ingress.
+#
+# Runs as the unprivileged user nobody with an empty environment, so it can
+# read neither the Gateway configuration, the CA private key, the audit log
+# file nor the copy of the audit log that the relay reads. The port must
+# match ingress_port in config.yaml. s6 restarts the Web UI when it exits;
+# the Gateway is not affected.
+# ==============================================================================
+set -e
+
+# s6-overlay keeps the container environment, including the Supervisor
+# token, in this directory for with-contenv, readable by every user. Only
+# root needs it (with-contenv runs as root), so close it before anything
+# runs as nobody. The audit log relay does the same.
+chmod 0700 /run/s6/container_environment
+
+# The Web UI receives the relay's summaries on a socket in this directory.
+# Only nobody and the relay's group (audit-relay) can reach it; the group
+# cannot list it. New files get the group (setgid), and the Web UI makes the
+# socket writable by the group.
+install -d -m 2710 -o nobody -g audit-relay /run/twingate-gateway-ui
+
+exec s6-setuidgid nobody \
+    env -i PATH=/usr/bin:/bin LANG=C.UTF-8 \
+    python3 -I /usr/lib/twingate-gateway-ui/gateway_ui.py --port 8100

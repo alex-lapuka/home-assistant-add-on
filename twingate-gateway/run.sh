@@ -5,12 +5,19 @@
 #
 # Validates the add-on options, prepares the CA that the Gateway signs its
 # on-demand TLS certificates with, renders the Gateway configuration and starts
-# the Gateway. Request header values can hold secrets: they are never logged.
+# the Gateway. Request header values can hold secrets: they are never logged,
+# and the status file for the Web UI holds header names only.
+#
+# Runs as the s6 service twingate-gateway, which passes the pipe to s6-log
+# (the twingate-gateway-log service) on file descriptor 3.
 # ==============================================================================
 set -o errexit -o nounset -o pipefail
 umask 077
 
 readonly GATEWAY_BIN="/usr/local/bin/twingate-gateway"
+# Written when the image is built (see the Dockerfile); empty if the version
+# could not be found out then.
+readonly GATEWAY_VERSION_FILE="/usr/share/twingate-gateway/version"
 readonly GATEWAY_PORT=8443
 readonly CONFIG_DIR="/etc/twingate-gateway"
 readonly CONFIG_FILE="${CONFIG_DIR}/config.yaml"
@@ -27,15 +34,23 @@ readonly STATIC_CERT_STATE="${STATIC_CERT_DIR}/issued-for"
 readonly STATIC_CERT_VALIDITY_DAYS=825
 readonly STATIC_CERT_RENEW_DAYS=30
 readonly AUDIT_LOG_FILE="/config/audit.log"
+readonly STATUS_DIR="/run/twingate-gateway"
+readonly STATUS_FILE="${STATUS_DIR}/status.json"
+readonly RELAY_SERVICE="/run/service/twingate-gateway-relay"
 
 # Set by the functions below.
+GATEWAY_VERSION=""
 NETWORK=""
+NETWORK_CHECK="unreachable"
+NETWORK_CHECK_STATUS=""
 GATEWAY_LOG_LEVEL=""
 HEADERS_JSON="{}"
 STATIC_IPS=""
 AUDIT_LOG="addon_log"
+AUDIT_PIPE=false
 CA_CERT=""
 CA_KEY=""
+CA_SOURCE="addon"
 RESOLVED_PATH=""
 
 # jq program that prints one line per invalid 'request_headers' entry, or
@@ -73,6 +88,21 @@ def entry_title($i):
   | select(length > 1)
   | "request_headers: header '\(.[0].name)' is set more than once (header names are case-insensitive)")
 JQ
+
+# Reads the version of the Gateway binary, recorded when the image was built,
+# into GATEWAY_VERSION. It stays empty when the file is missing, empty or
+# holds anything other than a version; the Web UI then shows the version from
+# the audit log.
+read_gateway_version() {
+    local version=""
+
+    if [[ -r "${GATEWAY_VERSION_FILE}" ]]; then
+        read -r version <"${GATEWAY_VERSION_FILE}" || true
+    fi
+    if [[ "${version}" =~ ^[0-9A-Za-z.+-]{1,32}$ ]]; then
+        GATEWAY_VERSION="${version}"
+    fi
+}
 
 # ------------------------------------------------------------------------------
 # Options
@@ -187,6 +217,14 @@ read_audit_log() {
         addon_log | file) ;;
         *) bashio::exit.nok "Option 'audit_log' must be 'addon_log' or 'file'." ;;
     esac
+
+    # s6-log copies the Gateway's standard output to the add-on log and to
+    # the logdir that the audit relay of the Web UI reads. Without the pipe
+    # to s6-log (file descriptor 3 is not open), the audit log goes to
+    # standard error as before and the Web UI shows no requests.
+    if { true >&3; } 2>/dev/null; then
+        AUDIT_PIPE=true
+    fi
 }
 
 # Checks that the Twingate network exists by requesting the signing key URL
@@ -205,14 +243,17 @@ check_network() {
         return 0
     fi
 
+    NETWORK_CHECK_STATUS="${status}"
     case "${status}" in
         404)
             bashio::exit.nok "Twingate network '${NETWORK}' not found: ${url} answered 404 Not Found. Set 'network' to the <name> in your Admin Console address <name>.twingate.com."
             ;;
         2?? | 3??)
+            NETWORK_CHECK="found"
             bashio::log.info "Twingate network '${NETWORK}' found."
             ;;
         *)
+            NETWORK_CHECK="http_error"
             bashio::log.warning "Could not check the network name: ${url} answered HTTP ${status}. Starting anyway."
             ;;
     esac
@@ -331,6 +372,24 @@ EOF
     sync
 }
 
+# Warns when a private key file is readable by its group or by others. The
+# add-on cannot change files in the read-only ssl folder, and the key is
+# usable either way, so this is never fatal. The unprivileged processes in
+# the add-on (the Web UI runs as nobody, the audit log relay as audit-relay,
+# s6-log as audit-log) can read a world-readable key.
+warn_if_key_readable() {
+    local key=$1
+    local mode
+
+    if ! mode=$(stat -L -c '%a' "${key}" 2>/dev/null) || [[ ! "${mode}" =~ ^[0-7]+$ ]]; then
+        return 0
+    fi
+    if (((8#${mode} & 8#044) != 0)); then
+        bashio::log.warning "The private key ${key} is readable by its group or by other users (mode ${mode}). Make it readable by its owner only, for example with 'chmod 600', so that unprivileged processes in this add-on cannot read it."
+    fi
+    return 0
+}
+
 # Selects the CA (custom files in /ssl, or the one this add-on creates in
 # /data/ca) and stores its paths in CA_CERT and CA_KEY.
 prepare_ca() {
@@ -361,7 +420,9 @@ prepare_ca() {
         if [[ -n "${problem}" ]]; then
             bashio::exit.nok "The custom CA (${CA_CERT}, ${CA_KEY}) cannot be used: ${problem}."
         fi
+        CA_SOURCE="custom"
         bashio::log.info "Using the custom CA certificate ${CA_CERT}."
+        warn_if_key_readable "${CA_KEY}"
     else
         CA_CERT="${ADDON_CA_CERT}"
         CA_KEY="${ADDON_CA_KEY}"
@@ -515,7 +576,8 @@ print_ca() {
 # encodes every value as a JSON string, so quotes, colons, braces or any other
 # YAML syntax in a header value cannot change the structure of the file. The
 # header values reach jq on stdin, not on its command line. --ascii-output
-# keeps the file 7-bit clean.
+# keeps the file 7-bit clean. With audit_log addon_log, the audit log goes to
+# the Gateway's standard output, which s6-log copies to the add-on log.
 render_config() {
     local tmp
 
@@ -535,6 +597,7 @@ render_config() {
         --arg static_key "${STATIC_KEY}" \
         --arg audit_log "${AUDIT_LOG}" \
         --arg audit_file "${AUDIT_LOG_FILE}" \
+        --arg audit_pipe "${AUDIT_PIPE}" \
         '. as $headers
         | {
             twingate: {network: $network},
@@ -545,6 +608,8 @@ render_config() {
                 output: (
                   if $audit_log == "file" then
                     {file: {path: $audit_file, rotation: {maxSize: "10MiB", maxBackupFiles: 3, compression: "gzip"}}}
+                  elif $audit_pipe == "true" then
+                    {stdout: {}}
                   else
                     {stderr: {}}
                   end
@@ -566,12 +631,134 @@ render_config() {
     mv -f "${tmp}" "${CONFIG_FILE}"
 }
 
+# Writes the status file that the Web UI shows: the options without secret
+# values, the CA certificate (never its key), the Gateway version recorded
+# when the image was built and the result of the network check. As in
+# render_config, the header values reach jq on stdin; only their names are
+# written. The file is world-readable because the Web UI runs as an
+# unprivileged user. The Web UI is not essential, so this function returns 1
+# on any failure instead of stopping the add-on.
+write_status() {
+    local tmp
+    local addon_version
+    local addon_slug
+    local host_port=""
+    local host_port_state="unknown"
+    local audit_stream="none"
+    local started_at
+    local ca_subject
+    local ca_not_after
+    local ca_fingerprint
+    local ca_pem
+    local static_not_after=""
+
+    started_at=$(date +%s) || return 1
+    ca_subject=$(openssl x509 -in "${CA_CERT}" -noout -subject -nameopt RFC2253) || return 1
+    ca_not_after=$(openssl x509 -in "${CA_CERT}" -noout -enddate -dateopt iso_8601) || return 1
+    ca_fingerprint=$(openssl x509 -in "${CA_CERT}" -noout -fingerprint -sha256) || return 1
+    ca_pem=$(openssl x509 -in "${CA_CERT}" -outform PEM) || return 1
+    if [[ -n "${STATIC_IPS}" ]]; then
+        static_not_after=$(openssl x509 -in "${STATIC_CERT}" -noout -enddate -dateopt iso_8601) || return 1
+    fi
+
+    if [[ "${AUDIT_LOG}" == "file" ]]; then
+        audit_stream="file"
+    elif [[ "${AUDIT_PIPE}" == true ]]; then
+        # Through s6-log, which keeps the copy that the relay reads.
+        audit_stream="relay"
+    fi
+
+    # The add-on's version, slug and host port come from its own Supervisor
+    # API entry (/addons/self/info), which needs no API permission in
+    # config.yaml. If the request fails, the Web UI shows them as unknown. The
+    # slug completes the 'ha apps rebuild' command that the Web UI shows when
+    # a newer Gateway is available.
+    addon_version=$(bashio::app.version) || addon_version=""
+    addon_slug=$(bashio::app.slug) || addon_slug=""
+    if [[ "${addon_slug}" == "null" || ! "${addon_slug}" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ ]]; then
+        addon_slug=""
+    fi
+    if host_port=$(bashio::app.port "${GATEWAY_PORT}/tcp"); then
+        if [[ "${host_port}" =~ ^[0-9]+$ ]]; then
+            host_port_state="mapped"
+        else
+            host_port=""
+            host_port_state="not_mapped"
+        fi
+    else
+        host_port=""
+    fi
+
+    install -d -m 0755 "${STATUS_DIR}" || return 1
+    tmp=$(mktemp "${STATUS_DIR}/.status.XXXXXX") || return 1
+
+    if ! printf '%s' "${HEADERS_JSON}" | jq --ascii-output \
+        --arg addon_version "${addon_version}" \
+        --arg addon_slug "${addon_slug}" \
+        --arg gateway_version "${GATEWAY_VERSION}" \
+        --argjson started_at "${started_at}" \
+        --arg network "${NETWORK}" \
+        --arg network_check "${NETWORK_CHECK}" \
+        --arg network_check_status "${NETWORK_CHECK_STATUS}" \
+        --arg level "${GATEWAY_LOG_LEVEL}" \
+        --arg audit_log "${AUDIT_LOG}" \
+        --arg audit_file "${AUDIT_LOG_FILE}" \
+        --arg audit_stream "${audit_stream}" \
+        --arg static_ips "${STATIC_IPS}" \
+        --arg static_not_after "${static_not_after#notAfter=}" \
+        --argjson port "${GATEWAY_PORT}" \
+        --arg host_port "${host_port}" \
+        --arg host_port_state "${host_port_state}" \
+        --arg ca_source "${CA_SOURCE}" \
+        --arg ca_cert "${CA_CERT}" \
+        --arg ca_subject "${ca_subject#subject=}" \
+        --arg ca_not_after "${ca_not_after#notAfter=}" \
+        --arg ca_fingerprint "${ca_fingerprint#*=}" \
+        --arg ca_pem "${ca_pem}" \
+        '{
+            schema: 1,
+            addon_version: $addon_version,
+            addon_slug: (if $addon_slug == "" then null else $addon_slug end),
+            gateway_version: (if $gateway_version == "" then null else $gateway_version end),
+            started_at: $started_at,
+            network: $network,
+            network_check: {result: $network_check, http_status: $network_check_status},
+            log_level: $level,
+            audit_log: $audit_log,
+            audit_log_file: (if $audit_log == "file" then $audit_file else null end),
+            audit_stream: $audit_stream,
+            request_header_names: keys,
+            certificate_ip_addresses: (if $static_ips == "" then [] else ($static_ips | split(",")) end),
+            gateway_port: $port,
+            host_port: (if $host_port == "" then null else ($host_port | tonumber) end),
+            host_port_state: $host_port_state,
+            ca: {
+              source: $ca_source,
+              certificate_file: $ca_cert,
+              subject: $ca_subject,
+              not_after: $ca_not_after,
+              fingerprint_sha256: $ca_fingerprint,
+              pem: ($ca_pem + "\n")
+            },
+            static_certificate: (if $static_ips == "" then null else {not_after: $static_not_after} end)
+          }' >"${tmp}" ||
+        ! chmod 0644 "${tmp}" ||
+        ! mv -f "${tmp}" "${STATUS_FILE}"; then
+        rm -f "${tmp}"
+        return 1
+    fi
+}
+
 # ------------------------------------------------------------------------------
 # Main
 # ------------------------------------------------------------------------------
 main() {
     local header_names
 
+    # The Web UI shows the Gateway as starting until write_status runs.
+    rm -f "${STATUS_FILE}"
+
+    read_gateway_version
     read_network
     read_log_level
     read_request_headers
@@ -582,6 +769,17 @@ main() {
     prepare_static_certificate
     print_ca
     render_config
+    # write_status reports every failure through its return value.
+    # shellcheck disable=SC2310
+    if ! write_status; then
+        bashio::log.warning "Could not write the status for the Web UI. The Gateway starts anyway; the Web UI shows it as starting."
+    elif [[ "${AUDIT_LOG}" == "file" ]]; then
+        # The relay runs as audit-relay until the status file says audit_log
+        # is file; then its run script starts it as root, which can read
+        # audit.log. The Gateway does not depend on the relay.
+        s6-svc -r "${RELAY_SERVICE}" ||
+            bashio::log.warning "Could not restart the audit log relay; the Web UI may show no requests."
+    fi
 
     bashio::log.info "Twingate network: ${NETWORK}"
     header_names=$(jq --raw-output 'keys | join(", ")' <<<"${HEADERS_JSON}")
@@ -596,11 +794,16 @@ main() {
     else
         bashio::log.info "Audit log: add-on log. It records every request with its incoming headers."
     fi
-    bashio::log.info "Starting Twingate Gateway on port ${GATEWAY_PORT}/tcp with log level ${GATEWAY_LOG_LEVEL}."
+    bashio::log.info "Starting Twingate Gateway${GATEWAY_VERSION:+ ${GATEWAY_VERSION}} on port ${GATEWAY_PORT}/tcp with log level ${GATEWAY_LOG_LEVEL}."
 
     # The Gateway does not need access to the Supervisor API.
     unset SUPERVISOR_TOKEN HASSIO_TOKEN
 
+    if [[ "${AUDIT_PIPE}" == true ]]; then
+        # Standard output, which carries the audit log with addon_log, goes
+        # to s6-log.
+        exec "${GATEWAY_BIN}" start --config "${CONFIG_FILE}" >&3 3>&-
+    fi
     exec "${GATEWAY_BIN}" start --config "${CONFIG_FILE}"
 }
 

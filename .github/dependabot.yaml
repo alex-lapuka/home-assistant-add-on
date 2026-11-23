@@ -10,3 +10,7 @@ updates:
     schedule:
       interval: weekly
       time: "06:00"
+    ignore:
+      # The Dockerfile follows the moving tag `2`; a new major version of the
+      # Gateway is adopted by hand with an add-on release.
+      - dependency-name: "twingate/gateway"
