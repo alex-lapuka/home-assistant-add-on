@@ -1,14 +1,20 @@
 """Pure parts of the API proxy (supervisor_proxy.py); no server is started.
 
-Proxy objects are created only to test their bookkeeping and identify();
-creating one imports aiohttp, which these tests therefore need.
+Proxy objects are created to test their bookkeeping, identify() and handle()
+up to the point where a request would go to the Supervisor; creating one
+imports aiohttp, which these tests therefore need.
 """
 
+import itertools
+import json
 import os
 import types
 import unittest
+from unittest import mock
 
 from support import (
+    GRANTS,
+    HOSTNAME,
     HOSTNAMES,
     NETWORK,
     NOW,
@@ -16,12 +22,14 @@ from support import (
     SIGNER,
     FakeClock,
     FakeFetch,
+    access_rules,
     binding,
     gat,
     gat_claims,
     headers,
     jwks,
     supervisor_proxy,
+    verifier,
 )
 
 GAT_HEADER = "X-Twingate-Gateway-Token"
@@ -123,15 +131,42 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(self.config(hostnames="host").hostnames, [])
         self.assertEqual(self.config().hostnames, [])
 
-    def test_groups(self) -> None:
-        config = self.config(groups={"read": ["Readers", "", 5, None], "mcp": ["Agents"], "full": ["Admins"]})
-        self.assertEqual(config.rules.read_groups, frozenset({"Readers"}))
-        self.assertEqual(config.rules.mcp_groups, frozenset({"Agents"}))
-        self.assertEqual(config.rules.full_groups, frozenset({"Admins"}))
-        self.assertEqual(config.rules.grants(["Other"]), frozenset())
-        # No group options: Read for everyone, nobody has MCP or Full.
-        empty = self.config(groups={"read": [], "mcp": [], "full": []})
-        self.assertEqual(empty.rules.grants(["Admins"]), frozenset({"read"}))
+    def test_access(self) -> None:
+        # The three toggles as /run.sh writes them, every combination.
+        for read, mcp, write in itertools.product((False, True), repeat=3):
+            with self.subTest(read=read, mcp=mcp, write=write):
+                config = self.config(access={"read": read, "mcp": mcp, "write": write})
+                self.assertEqual(config.grants, access_rules.grants_from_options(read, mcp, write))
+        self.assertEqual(self.config(access={"read": True, "mcp": False, "write": False}).grants, GRANTS["read"])
+        self.assertEqual(self.config(access={"read": False, "mcp": False, "write": True}).grants, GRANTS["write"])
+        self.assertEqual(self.config(access={"read": True, "mcp": True, "write": False}).grants, GRANTS["read+mcp"])
+
+    def test_access_missing_or_malformed_is_off(self) -> None:
+        # Fails closed: what is not the boolean true counts as off.
+        cases = (
+            {},
+            {"access": None},
+            {"access": []},
+            {"access": [True, True, True]},
+            {"access": "read,mcp,write"},
+            {"access": True},
+            {"access": {}},
+            {"access": {"read": None, "mcp": None, "write": None}},
+            {"access": {"read": "true", "mcp": 1, "write": "yes"}},
+            {"access": {"read": [True], "mcp": {"on": True}, "write": 1.0}},
+            {"access": {"Read": True, "MCP": True, "Write": True}},
+            {"access": {"allow_read": True, "allow_mcp": True, "allow_write": True}},
+            {"access": {"full": True}},
+            # The group lists of development versions of 0.3.0 are not read.
+            {"groups": {"read": [], "mcp": ["Agents"], "full": ["Admins"]}},
+            {"read_groups": [], "mcp_groups": ["Agents"], "full_groups": ["Admins"]},
+        )
+        for raw in cases:
+            with self.subTest(raw=raw):
+                self.assertEqual(self.config(**raw).grants, frozenset())
+        # A malformed toggle does not affect the others.
+        self.assertEqual(self.config(access={"read": True, "mcp": "true"}).grants, GRANTS["read"])
+        self.assertEqual(self.config(access={"read": "no", "write": True}).grants, GRANTS["write"])
 
 
 class ReadTokenTest(unittest.TestCase):
@@ -309,6 +344,148 @@ class IdentifyTest(unittest.IsolatedAsyncioTestCase):
         identity, _reason = await proxy.identify(request)
         self.assertEqual(identity.username, "alice@example.com")
         self.assertEqual(fetch.calls, 2)
+
+
+class FakeJournal:
+    """Collects what Proxy hands the journal instead of sending it to the Web UI."""
+
+    def __init__(self) -> None:
+        self.keys: dict = {}
+        self.changed = False
+        self.decisions: list[str] = []
+        self.records: list[dict] = []
+        self.refused: list[tuple] = []
+
+    def count(self, decision: str) -> None:
+        self.decisions.append(decision)
+
+    def add(self, **record: object) -> None:
+        self.records.append(record)
+
+    def unauthenticated(self, remote: str, reason: str, method: str, path: str) -> None:
+        self.refused.append((remote, reason, method, path))
+
+
+FORWARDED = object()
+
+
+class HandleTest(unittest.IsolatedAsyncioTestCase):
+    """Proxy.handle(): the access level of the options applies to every verified caller.
+
+    Allowed requests stop at Proxy.forward(), which is replaced here; refused
+    ones are answered by handle() itself.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        # Proxy imports aiohttp.web, which takes a few tenths of a second the
+        # first time: done here, not inside a test's event loop, which would
+        # report it as a slow callback.
+        import aiohttp.web  # noqa: F401, PLC0415
+
+    def proxy(self, read: object, mcp: object, write: object) -> object:
+        config = supervisor_proxy.Config({"network": NETWORK, "hostnames": HOSTNAMES, "access": {"read": read, "mcp": mcp, "write": write}})
+        self.journal = FakeJournal()
+        proxy = supervisor_proxy.Proxy(config, "supervisor-token", self.journal, verifier())
+        self.forwarded: list[tuple] = []
+
+        async def forward(_request, identity, label, why, path, *_rest) -> object:
+            self.forwarded.append((identity.username, label, why, path))
+            return FORWARDED
+
+        proxy.forward = forward
+        return proxy
+
+    async def handle(self, proxy: object, method: str, path: str, *pairs: tuple[str, str], token: str | None = None) -> tuple:
+        from yarl import URL  # noqa: PLC0415 - comes with aiohttp
+
+        token_pairs = () if token == "" else ((GAT_HEADER, token or SIGNER.token()),)
+        request = types.SimpleNamespace(method=method, url=URL(f"http://{HOSTNAME}{path}"), remote="172.30.33.5", headers=headers(*token_pairs, *pairs))
+        with mock.patch.object(supervisor_proxy, "log") as log:
+            response = await proxy.handle(request)
+        lines = [call.args[0] for call in log.call_args_list]
+        if response is FORWARDED:
+            return "forwarded", None, lines
+        return response.status, json.loads(response.text)["message"] if response.content_type == "application/json" else response.text, lines
+
+    async def test_all_off_refuses_every_request_and_names_the_toggle(self) -> None:
+        proxy = self.proxy(False, False, False)
+        self.assertEqual((proxy.grants, proxy.label), (frozenset(), "none"))
+        cases = (
+            ("GET", "/api/states", "Forbidden: this request needs 'Allow reading' in the Twingate Gateway add-on."),
+            ("HEAD", "/api/", "Forbidden: this request needs 'Allow reading' in the Twingate Gateway add-on."),
+            ("POST", "/api/mcp", "Forbidden: this request needs 'Allow MCP' in the Twingate Gateway add-on."),
+            ("POST", "/api/mcp/assist", "Forbidden: this request needs 'Allow changes (write)' in the Twingate Gateway add-on."),
+            ("POST", "/api/services/light/turn_on", "Forbidden: this request needs 'Allow changes (write)' in the Twingate Gateway add-on."),
+            ("GET", "/api/error_log", "Forbidden: this request needs 'Allow changes (write)' in the Twingate Gateway add-on."),
+        )
+        for method, path, message in cases:
+            with self.subTest(method=method, path=path):
+                self.assertEqual((await self.handle(proxy, method, path))[:2], (403, message))
+        status, message, _lines = await self.handle(proxy, "GET", "/api/websocket", ("Upgrade", "websocket"))
+        self.assertEqual((status, message), (403, "Forbidden: the WebSocket API needs 'Allow reading' in the Twingate Gateway add-on."))
+        self.assertEqual(self.forwarded, [])
+        self.assertEqual(set(self.journal.decisions), {"denied"})
+
+    async def test_read_only(self) -> None:
+        proxy = self.proxy(True, False, False)
+        self.assertEqual((await self.handle(proxy, "GET", "/api/states"))[0], "forwarded")
+        self.assertEqual(self.forwarded, [("alice@example.com", "read", "read", "/api/states")])
+        status, message, _lines = await self.handle(proxy, "POST", "/api/mcp")
+        self.assertEqual((status, message), (403, "Forbidden: this request needs 'Allow MCP' in the Twingate Gateway add-on."))
+        status, message, _lines = await self.handle(proxy, "POST", "/api/services/light/turn_on")
+        self.assertEqual((status, message), (403, "Forbidden: this request needs 'Allow changes (write)' in the Twingate Gateway add-on."))
+
+    async def test_mcp_only(self) -> None:
+        proxy = self.proxy(False, True, False)
+        self.assertEqual((await self.handle(proxy, "POST", "/api/mcp"))[0], "forwarded")
+        self.assertEqual(self.forwarded, [("alice@example.com", "mcp", "mcp", "/api/mcp")])
+        status, message, _lines = await self.handle(proxy, "GET", "/api/states")
+        self.assertEqual((status, message), (403, "Forbidden: this request needs 'Allow reading' in the Twingate Gateway add-on."))
+
+    async def test_write_allows_everything_not_always_blocked(self) -> None:
+        for read, mcp in itertools.product((False, True), repeat=2):
+            with self.subTest(read=read, mcp=mcp):
+                proxy = self.proxy(read, mcp, True)
+                self.assertEqual((proxy.grants, proxy.label), (GRANTS["write"], "write"))
+                for method, path in (("GET", "/api/states"), ("POST", "/api/mcp"), ("POST", "/api/services/light/turn_on"), ("POST", "/api/template")):
+                    self.assertEqual((await self.handle(proxy, method, path))[0], "forwarded")
+                self.assertEqual([why for _user, _label, why, _path in self.forwarded], ["write", "mcp", "write", "write"])
+                status, message, _lines = await self.handle(proxy, "POST", "/api/services/hassio/host_reboot")
+                self.assertEqual((status, message), (403, "Forbidden: blocked by the Twingate Gateway add-on for every caller."))
+
+    async def test_groups_in_the_token_do_not_matter(self) -> None:
+        proxy = self.proxy(True, False, False)
+        users = (
+            {"id": "user-1", "username": "alice@example.com", "groups": ["Home Admins"]},
+            {"id": "user-2", "username": "bob@example.com", "groups": []},
+            {"id": "user-3", "username": "carol@example.com"},
+            {"id": "user-4", "username": "dave@example.com", "groups": None},
+        )
+        for user in users:
+            token = SIGNER.token(gat_claims(user=user))
+            with self.subTest(user=user["username"]):
+                self.assertEqual((await self.handle(proxy, "GET", "/api/states", token=token))[0], "forwarded")
+                self.assertEqual((await self.handle(proxy, "POST", "/api/services/light/turn_on", token=token))[0], 403)
+        self.assertEqual([user for user, *_rest in self.forwarded], [user["username"] for user in users])
+
+    async def test_without_a_valid_token_nothing_is_allowed(self) -> None:
+        proxy = self.proxy(True, True, True)
+        for token in ("", "not a token", SIGNER.token(gat_claims(exp=int(NOW) - 1))):
+            with self.subTest(token=token[:12]):
+                self.assertEqual((await self.handle(proxy, "GET", "/api/states", token=token))[:2], (401, "401: Unauthorized"))
+        self.assertEqual(self.forwarded, [])
+        self.assertEqual(len(self.journal.refused), 3)
+
+    async def test_log_and_journal(self) -> None:
+        proxy = self.proxy(True, False, False)
+        _status, _message, lines = await self.handle(proxy, "POST", "/api/template")
+        self.assertEqual(len(lines), 1)
+        self.assertRegex(lines[0], r"^alice@example\.com \[read\] POST /api/template -> 403 \(denied\) in \d+ ms; needs 'Allow changes \(write\)'$")
+        self.assertEqual(self.journal.decisions, ["denied"])
+        record = self.journal.records[0]
+        self.assertNotIn("grant", record)
+        self.assertEqual((record["user"], record["method"], record["path"], record["status"], record["decision"]), ("alice@example.com", "POST", "/api/template", 403, "denied"))
 
 
 class ShownPathTest(unittest.TestCase):
