@@ -13,6 +13,9 @@ comes from:
   when connection logs are on, summaries of recent connections over a Unix
   socket. They are kept in memory only.
 
+The add-on's name and slug, shown on the page, and the port to listen on
+(ingress_port) come from the add-on's config.yml, which the image contains.
+
 The page shows the Connector's own view. Whether Twingate sees the Connector
 as online is shown in the Twingate Admin Console.
 
@@ -24,6 +27,7 @@ log relay, which runs as another user. Python standard library only.
 from __future__ import annotations
 
 import contextlib
+import html
 import json
 import math
 import os
@@ -45,7 +49,12 @@ RELAY_SOCKET = "/run/twingate-connector-ui/relay.sock"
 CONNECTOR_BIN = "/usr/bin/twingate-connector"
 # The kernel keeps the first 15 characters of a program's file name.
 CONNECTOR_NAME = os.path.basename(CONNECTOR_BIN)[:15]
-DEFAULT_PORT = 8101
+# The add-on's config.yml, copied into the image (see the Dockerfile). Its
+# name, slug and ingress_port are the only place where they are set, so that
+# a copy of the add-on with another name, slug and port (the Twingate
+# Connector (Exit) add-on, made by scripts/sync-connector-exit.sh) differs
+# from this add-on in config.yml only.
+ADDON_CONFIG = "/usr/share/twingate-connector-ui/config.yml"
 DEFAULT_METRICS_PORT = 9999
 
 LIVE_CACHE_SECONDS = 2.0
@@ -77,6 +86,13 @@ _WORD = re.compile(r"[a-z0-9_/.-]{1,40}")
 _ADDRESS = re.compile(r"[0-9A-Fa-f.:]{2,45}")
 _HOSTNAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,252}")
 _ERROR_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,59}")
+# A top-level key of config.yml with its value on the same line, and the
+# forms of that value understood here: "double-quoted" or 'single-quoted'
+# without escapes, or plain, each optionally followed by a comment.
+_CONFIG_KEY = re.compile(r"(name|slug|ingress_port):[ \t]+(\S.*?)[ \t]*")
+_CONFIG_VALUE = re.compile(r'"([^"\\]*)"(?:[ \t]+#.*)?|\'([^\']*)\'(?:[ \t]+#.*)?|([^\s"\'#|>&*!%@`{}\[\],][^#]*?)(?:[ \t]+#.*)?')
+_SLUG = re.compile(r"[a-z0-9_][a-z0-9_-]{0,63}")
+_PORT = re.compile(r"[1-9][0-9]{0,4}")
 
 
 # ----------------------------------------------------------------------------
@@ -113,6 +129,49 @@ def _count(value: object) -> int | None:
 
 def _now() -> float:
     return round(time.time(), 3)
+
+
+# ----------------------------------------------------------------------------
+# The add-on's name, slug and ingress port, from config.yml
+# ----------------------------------------------------------------------------
+
+
+def load_addon_config(path: str = ADDON_CONFIG) -> dict:
+    """Reads name, slug and ingress_port from the add-on's config.yml.
+
+    Only the top-level keys with a one-line value are read (Python's standard
+    library has no YAML parser). Any other form, or a missing or invalid
+    value, raises ValueError, which fails the image build (self_check).
+    """
+    values: dict[str, str] = {}
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            key_match = _CONFIG_KEY.fullmatch(line.rstrip("\r\n"))
+            if not key_match:
+                continue
+            key, raw = key_match.groups()
+            value_match = _CONFIG_VALUE.fullmatch(raw)
+            if key in values:
+                raise ValueError(f"{path}: {key} is set more than once")
+            if not value_match:
+                raise ValueError(f"{path}: cannot read the value of {key}: {raw}")
+            values[key] =next(group for group in value_match.groups() if group is not None)
+    name = values.get("name", "")
+    slug = values.get("slug", "")
+    port = values.get("ingress_port", "")
+    if not 0 < len(name) <= 100 or not _SLUG.fullmatch(slug) or not _PORT.fullmatch(port) or int(port) > 65535:
+        raise ValueError(f"{path}: need name, slug and ingress_port (1 to 65535), got {values}")
+    return {"name": name, "slug": slug, "ingress_port": int(port)}
+
+
+def render_page(template: bytes, addon: dict) -> bytes:
+    """Puts the add-on's name and slug into the page (index.html)."""
+    page = template
+    for marker, value in ((b"{{addon_name}}", addon["name"]), (b"{{addon_slug}}", addon["slug"])):
+        page = page.replace(marker, html.escape(value, quote=True).encode("utf-8"))
+    if b"{{" in page:
+        raise ValueError("index.html has an unknown {{...}} marker")
+    return page
 
 
 # ----------------------------------------------------------------------------
@@ -679,14 +738,21 @@ class StatusBuilder:
 # ----------------------------------------------------------------------------
 
 
-def build_app(builder: StatusBuilder | None) -> ingress_server.App:
+def build_app(builder: StatusBuilder | None, addon: dict) -> ingress_server.App:
     routes = {"/api/status": builder.build} if builder else {}
-    return ingress_server.App(WWW_DIR, FILES, "index.html", routes)
+    app = ingress_server.App(WWW_DIR, FILES, "index.html", routes)
+    app.index = render_page(app.index, addon)
+    return app
 
 
 def self_check() -> int:
-    """Checks the page files and the parsers; used when the image is built."""
-    build_app(None)
+    """Checks config.yml, the page files and the parsers; used when the image is built."""
+    try:
+        addon = load_addon_config()
+        build_app(None, addon)
+    except (OSError, ValueError) as error:
+        print(f"self check failed: {error}", file=sys.stderr)
+        return 1
     sample = (
         "# HELP twingate_inbound_bytes Total bytes received from resources to connector.\n"
         "# TYPE twingate_inbound_bytes counter\n"
@@ -715,21 +781,22 @@ def self_check() -> int:
     if view["problems"]["items"][0]["count"] != 3 or len(view["connections"]["items"]) != 1 or view["problems"]["counts"]["warning"] != 3:
         print(f"self check failed: relay restart {view}", file=sys.stderr)
         return 1
-    print("connector_ui: ok")
+    print(f"connector_ui: ok ({addon['name']}, {addon['slug']}, port {addon['ingress_port']})")
     return 0
 
 
 def main(argv: list[str]) -> int:
     if "--check" in argv:
         return self_check()
-    port = DEFAULT_PORT
+    addon = load_addon_config()
+    port = addon["ingress_port"]
     if "--port" in argv:
         port = int(argv[argv.index("--port") + 1])
     relay = RelayStore()
     relay.start()
     builder = StatusBuilder(relay)
     builder.start()
-    ingress_server.serve(port, build_app(builder))
+    ingress_server.serve(port, build_app(builder, addon))
     return 0
 
 

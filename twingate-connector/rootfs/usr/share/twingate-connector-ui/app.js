@@ -11,7 +11,12 @@
 (() => {
   const REFRESH_MS = 5000;
   const STATUS_URL = 'api/status';
-  const SECTIONS_KEY = 'twingate-connector:sections';
+  // The add-on's name and slug from its config.yml, which connector_ui.py
+  // puts into index.html (data-addon-name, data-addon-slug). The slug keeps
+  // the section choices of this add-on apart from those of the Twingate
+  // Connector (Exit) add-on: both pages share the browser's storage.
+  const ADDON = document.documentElement.dataset;
+  const SECTIONS_KEY = `${ADDON.addonSlug}:sections`;
   const LIST_LIMIT = 10;
   const signatures = new Map();
   let failures = 0;
@@ -918,7 +923,7 @@
   function renderFooter(data) {
     const startup = data.startup || {};
     render('footer', [startup.addon_version], () => el('p', null,
-      `Read-only status page of the Twingate Connector add-on${startup.addon_version ? ` ${startup.addon_version}` : ''}. Values refresh every 5 seconds.`));
+      `Read-only status page of the ${ADDON.addonName} add-on${startup.addon_version ? ` ${startup.addon_version}` : ''}. Values refresh every 5 seconds.`));
   }
 
   function renderLive(ok, when) {
