@@ -64,12 +64,16 @@ audit_relay = importlib.import_module("audit_relay")
 # Grants
 # ----------------------------------------------------------------------------
 
+# Every set of grants the three toggles (allow_read, allow_mcp, allow_write)
+# can give, by its label in the add-on log. The policy tables are written
+# against these; test_access_rules_grants.py checks that the toggles give
+# exactly them.
 GRANTS = {
     "none": frozenset(),
     "read": frozenset({access_rules.READ}),
     "mcp": frozenset({access_rules.MCP}),
     "read+mcp": frozenset({access_rules.READ, access_rules.MCP}),
-    "full": frozenset({access_rules.READ, access_rules.MCP, access_rules.FULL}),
+    "write": frozenset({access_rules.READ, access_rules.MCP, access_rules.WRITE}),
 }
 
 # ----------------------------------------------------------------------------

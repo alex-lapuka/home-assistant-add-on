@@ -65,19 +65,22 @@ class TokenTest(unittest.TestCase):
         self.assertEqual(rejection(self.verifier, token), reason)
 
     def test_valid_token_gives_the_caller(self) -> None:
-        claims = gat_claims(user=with_user(groups=["Home Admins", 5, None, "Family", {"x": 1}]))
-        identity = self.verifier.verify(SIGNER.token(claims))
+        identity = self.verifier.verify(SIGNER.token(gat_claims(user=with_user(groups=["Home Admins", "Family"]))))
         self.assertEqual(identity.username, "alice@example.com")
         self.assertEqual(identity.user_id, "user-1")
-        self.assertEqual(identity.groups, ("Home Admins", "Family"))
         self.assertEqual(identity.resource_id, "resource-1")
         self.assertEqual(identity.expires_at, NOW + 600)
+        # The access level is the same for every caller: the groups are not kept.
+        self.assertFalse(hasattr(identity, "groups"))
 
-    def test_groups_missing_or_null_give_no_groups(self) -> None:
-        for groups in (DROP, None, []):
+    def test_any_list_of_groups_is_accepted(self) -> None:
+        # Missing, null, empty, or with entries that are not text: the token
+        # is valid all the same (a groups claim that is not a list is not;
+        # see CLAIM_CASES).
+        for groups in (DROP, None, [], ["Everyone"], ["Home Admins", 5, None, {"x": 1}]):
             with self.subTest(groups=groups):
                 identity = self.verifier.verify(SIGNER.token(gat_claims(user=with_user(groups=groups))))
-                self.assertEqual(identity.groups, ())
+                self.assertEqual(identity.username, "alice@example.com")
 
     def test_only_es256_is_accepted(self) -> None:
         payload = json_segment(gat_claims())

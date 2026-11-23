@@ -766,7 +766,7 @@
   const DECISIONS = {
     read: ['success', 'Allowed (Read)'],
     mcp: ['success', 'Allowed (MCP)'],
-    full: ['success', 'Allowed (Full)'],
+    write: ['success', 'Allowed (Write)'],
     denied: ['warning', 'Denied'],
     blocked: ['danger', 'Blocked'],
     invalid: ['warning', 'Refused'],
@@ -837,7 +837,6 @@
         return [
           clockTime(record.t),
           record.user || '–',
-          record.grant || '–',
           el('span', null, proxyRequestText(record)),
           pill(kind, label),
           record.status ? String(record.status) : '–',
@@ -849,7 +848,6 @@
         table([
           { label: 'Time', cellClass: 'tg-nowrap' },
           { label: 'User', cellClass: 'tg-break' },
-          { label: 'Grant' },
           { label: 'Request' },
           { label: 'Decision' },
           { label: 'Status' },
@@ -923,46 +921,56 @@
     });
   }
 
-  const GRANTS = [
-    ['read', 'Read', 'Reads over REST and WebSocket; no actions and no templates.', 'Everyone with access to the Resource', 'everyone'],
-    ['mcp', 'MCP', 'The Model Context Protocol endpoint /api/mcp.', 'Nobody', 'nobody'],
-    ['full', 'Full', 'Everything that is not always blocked; includes Read and MCP.', 'Nobody', 'nobody'],
+  // The three toggles of the add-on options: [key, short name, option name in
+  // the Configuration tab, what it allows].
+  const ACCESS_TOGGLES = [
+    ['read', 'Read', 'Allow reading', 'Reads over REST and WebSocket; no actions and no templates.'],
+    ['mcp', 'MCP', 'Allow MCP', 'The Model Context Protocol endpoint /api/mcp.'],
+    ['write', 'Write', 'Allow changes (write)', 'Everything that is not always blocked, including reading and MCP.'],
   ];
-
-  function groupList(names, empty) {
-    if (!names || !names.length) {
-      return el('span', 'tg-muted', empty);
-    }
-    return el('div', null, names.map((name, index) => [index ? ' ' : null, code(name)]));
-  }
 
   function renderAccess(data) {
     const settings = data.startup && data.startup.proxy;
-    const groups = (settings && settings.groups) || {};
+    const access = (settings && settings.access) || {};
+    const allOff = !ACCESS_TOGGLES.some(([key]) => access[key]);
     let digest;
     if (!data.ready) {
       digest = NOT_STARTED;
     } else if (!settings) {
       digest = 'Not available';
     } else {
-      digest = GRANTS.map(([key, label, , , none]) => `${label}: ${groups[key] && groups[key].length ? groups[key].join(', ') : none}`).join(' · ');
+      digest = ACCESS_TOGGLES.map(([key, name]) => `${name} ${access[key] ? 'on' : 'off'}`).join(' · ');
     }
-    sections.update('access', { digest, open: data.ready ? false : null });
+    // All off is a choice (for example with the request header setup only),
+    // so it is shown, but does not open the section.
+    sections.update('access', { digest, badge: data.ready && settings && allOff ? 'All off' : '', open: data.ready ? false : null });
 
-    render('access', [data.ready, Boolean(settings), groups], () => {
+    render('access', [data.ready, Boolean(settings), access], () => {
       if (!data.ready) {
         return el('p', 'tg-empty', `${NOT_STARTED}.`);
       }
       if (!settings) {
         return el('p', 'tg-empty', 'The API proxy configuration is not available. The add-on\'s Log tab shows why.');
       }
+      let summary = null;
+      if (allOff) {
+        summary = 'All three are off: the proxy answers 403 Forbidden to every request.';
+      } else if (access.write) {
+        summary = 'Write is on, so it allows reading and MCP as well; the other two toggles make no difference.';
+      }
       return [
         table([
-          { label: 'Grant' },
-          { label: 'Who' },
+          { label: 'Toggle' },
+          { label: 'State' },
           { label: 'Allows' },
-        ], GRANTS.map(([key, label, allows, empty]) => [el('strong', null, label), groupList(groups[key], empty), allows]), 'tg-table--stack'),
-        note('Full is a block-list, not a security boundary. What MCP can do is set in Home Assistant\'s MCP Server settings; by default any action on any entity.'),
+        ], ACCESS_TOGGLES.map(([key, , option, allows]) => [
+          el('strong', null, option),
+          pill(access[key] ? 'success' : 'neutral', access[key] ? 'On' : 'Off'),
+          allows,
+        ]), 'tg-table--stack'),
+        summary ? note(summary) : null,
+        note('This access level applies to everyone who has access to the Resource in Twingate. To give people different access, decide in Twingate who gets the Resource.'),
+        note('Write is a block-list, not a security boundary. What MCP can do is set in Home Assistant\'s MCP Server settings; by default any action on any entity. Change the toggles on the add-on\'s Configuration tab; they apply at its next start.'),
       ];
     });
   }

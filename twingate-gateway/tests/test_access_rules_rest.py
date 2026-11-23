@@ -1,7 +1,8 @@
-"""REST decisions per grant (access_rules.decide_rest).
+"""REST decisions per grant (access_rules.decide_rest), and the toggle a 403 names.
 
-The tables below are the REST access policy: a change to what a grant
-allows must change them.
+The grants are those the three toggles of the add-on options can give
+(support.GRANTS). The tables below are the REST access policy: a change to
+what a toggle allows must change them.
 """
 
 import unittest
@@ -9,7 +10,7 @@ import unittest
 from support import GRANTS, access_rules
 
 ALL_GRANTS = tuple(GRANTS)
-ALLOWED_REASONS = ("read", "mcp", "full")
+ALLOWED_REASONS = ("read", "mcp", "write")
 
 # The Read allow-list, entry by entry: (method, pattern). HEAD is allowed
 # wherever GET is.
@@ -48,7 +49,7 @@ READ_PATHS = (
     "/api/config/config_entries/entry",
 )
 
-# Blocked for every caller, Full included, whatever the method.
+# Blocked for every caller, Write included, whatever the method.
 ALWAYS_BLOCKED_PATHS = (
     # Core's proxies into the Supervisor, its ingress proxy and Supervisor
     # login endpoints.
@@ -98,7 +99,7 @@ ALWAYS_BLOCKED_PATHS = (
 )
 
 # (grant, method, path, expected reason); the request is allowed when the
-# reason is read, mcp or full.
+# reason is read, mcp or write.
 REST_CASES = (
     # Read: default deny for everything not on the allow-list.
     ("read", "POST", "/api/services/light/turn_on", "denied"),
@@ -142,56 +143,85 @@ REST_CASES = (
     ("mcp", "GET", "/api/mcp", "mcp"),
     ("mcp", "DELETE", "/api/mcp", "mcp"),
     ("read+mcp", "POST", "/api/mcp", "mcp"),
-    ("full", "POST", "/api/mcp", "mcp"),
+    ("write", "POST", "/api/mcp", "mcp"),
     ("read", "POST", "/api/mcp", "denied"),
     ("read", "GET", "/api/mcp", "denied"),
     ("mcp", "GET", "/api/", "denied"),
     ("mcp", "GET", "/api/states", "denied"),
     ("mcp", "POST", "/api/services/light/turn_on", "denied"),
-    # The per-API endpoints /api/mcp/<id> need Full (DOCS.md: they would let
+    # The per-API endpoints /api/mcp/<id> need Write (DOCS.md: they would let
     # MCP callers bypass the main URL's settings).
     ("mcp", "POST", "/api/mcp/assist", "denied"),
     ("read+mcp", "POST", "/api/mcp/assist", "denied"),
     ("mcp", "POST", "/api/mcp/", "denied"),
-    ("full", "POST", "/api/mcp/assist", "full"),
+    ("write", "POST", "/api/mcp/assist", "write"),
     # Read and MCP together: each its own requests.
     ("read+mcp", "GET", "/api/states", "read"),
     ("read+mcp", "POST", "/api/services/light/turn_on", "denied"),
-    # Full: everything that is not always blocked.
-    ("full", "POST", "/api/services/light/turn_on", "full"),
-    ("full", "POST", "/api/services/homeassistant/restart", "full"),
-    ("full", "POST", "/api/template", "full"),
-    ("full", "POST", "/api/events/my_event", "full"),
-    ("full", "DELETE", "/api/states/sensor.x", "full"),
-    ("full", "GET", "/api/error_log", "full"),
-    ("full", "POST", "/api/config/config_entries/flow", "full"),
-    ("full", "POST", "/api/webhook/abc", "full"),
-    ("full", "GET", "/api/unknown", "full"),
+    # Write: everything that is not always blocked.
+    ("write", "POST", "/api/services/light/turn_on", "write"),
+    ("write", "POST", "/api/services/homeassistant/restart", "write"),
+    ("write", "POST", "/api/template", "write"),
+    ("write", "POST", "/api/events/my_event", "write"),
+    ("write", "DELETE", "/api/states/sensor.x", "write"),
+    ("write", "GET", "/api/error_log", "write"),
+    ("write", "POST", "/api/config/config_entries/flow", "write"),
+    ("write", "POST", "/api/webhook/abc", "write"),
+    ("write", "GET", "/api/unknown", "write"),
 )
 
 # Raw paths through the proxy's two steps: canonical_path(), then
 # decide_rest(); "unclear" is the 400 answer for a path that could be read
 # in more than one way.
 RAW_CASES = (
-    ("full", "POST", "/api/services/%68assio/host_reboot", "blocked"),
-    ("full", "GET", "/api/%68assio/supervisor/info", "blocked"),
-    ("full", "GET", "/api/%62ackup/download/x", "blocked"),
-    ("full", "POST", "/api/services/hassio%2Fhost_reboot", "unclear"),
-    ("full", "POST", "/api/services%2Fhassio/host_reboot", "unclear"),
-    ("full", "GET", "/api/hassio%3f", "unclear"),
-    ("full", "GET", "/api/hassio%23", "unclear"),
-    ("full", "GET", "/api/%2568assio/x", "unclear"),
-    ("full", "GET", "/api/states/../hassio/x", "unclear"),
-    ("full", "GET", "/api/x/..%2fhassio", "unclear"),
-    ("full", "GET", "/api/%2e%2e/hassio", "unclear"),
-    ("full", "GET", "//api/hassio", "unclear"),
-    ("full", "GET", "/api//hassio", "unclear"),
+    ("write", "POST", "/api/services/%68assio/host_reboot", "blocked"),
+    ("write", "GET", "/api/%68assio/supervisor/info", "blocked"),
+    ("write", "GET", "/api/%62ackup/download/x", "blocked"),
+    ("write", "POST", "/api/services/hassio%2Fhost_reboot", "unclear"),
+    ("write", "POST", "/api/services%2Fhassio/host_reboot", "unclear"),
+    ("write", "GET", "/api/hassio%3f", "unclear"),
+    ("write", "GET", "/api/hassio%23", "unclear"),
+    ("write", "GET", "/api/%2568assio/x", "unclear"),
+    ("write", "GET", "/api/states/../hassio/x", "unclear"),
+    ("write", "GET", "/api/x/..%2fhassio", "unclear"),
+    ("write", "GET", "/api/%2e%2e/hassio", "unclear"),
+    ("write", "GET", "//api/hassio", "unclear"),
+    ("write", "GET", "/api//hassio", "unclear"),
     ("mcp", "POST", "/api/mcp%2Fassist", "unclear"),
     ("mcp", "POST", "/api/%6Dcp", "mcp"),
     ("read", "GET", "/api/st%61tes", "read"),
     ("read", "GET", "/api/states%3f", "unclear"),
-    ("full", "POST", "/api/services/light/turn_on", "full"),
+    ("write", "POST", "/api/services/light/turn_on", "write"),
 )
+
+
+# (method, path, the grant whose toggle allows it) for requests that are not
+# always blocked: the smallest one, which the 403 answer names.
+NEEDED_GRANT_CASES = (
+    ("GET", "/api/", "read"),
+    ("GET", "/api/states", "read"),
+    ("HEAD", "/api/states/sensor.x", "read"),
+    ("GET", "/api/history/period", "read"),
+    ("POST", "/api/mcp", "mcp"),
+    ("GET", "/api/mcp", "mcp"),
+    ("DELETE", "/api/mcp", "mcp"),
+    ("POST", "/api/mcp/assist", "write"),
+    ("POST", "/api/states", "write"),
+    ("DELETE", "/api/states/sensor.x", "write"),
+    ("POST", "/api/services/light/turn_on", "write"),
+    ("POST", "/api/template", "write"),
+    ("GET", "/api/error_log", "write"),
+    ("GET", "/api/websocket", "write"),
+    ("POST", "/api/webhook/abc", "write"),
+    ("GET", "/API/STATES", "write"),
+    ("GET", "/api/unknown", "write"),
+)
+
+FORBIDDEN_MESSAGES = {
+    "read": "Forbidden: this request needs 'Allow reading' in the Twingate Gateway add-on.",
+    "mcp": "Forbidden: this request needs 'Allow MCP' in the Twingate Gateway add-on.",
+    "write": "Forbidden: this request needs 'Allow changes (write)' in the Twingate Gateway add-on.",
+}
 
 
 def decide_raw(method: str, raw_path: str, grants: frozenset) -> str:
@@ -218,7 +248,7 @@ class RestPolicyTest(unittest.TestCase):
                 self.assert_decision("read", "GET", path, "read")
                 self.assert_decision("read", "HEAD", path, "read")
                 self.assert_decision("read+mcp", "GET", path, "read")
-                self.assert_decision("full", "GET", path, "full")
+                self.assert_decision("write", "GET", path, "write")
                 # Changing requests on the same paths are not reads.
                 self.assert_decision("read", "POST", path, "denied")
                 self.assert_decision("read", "DELETE", path, "denied")
@@ -266,6 +296,40 @@ class RestPolicyTest(unittest.TestCase):
         for domain, blocked in cases:
             with self.subTest(domain=domain):
                 self.assertIs(access_rules.blocked_service_domain(domain), blocked)
+
+    def test_write_allows_whatever_another_grant_allows(self) -> None:
+        requests = {(method, path) for _grant, method, path, _reason in REST_CASES}
+        requests |= {(method, path) for path in READ_PATHS for method in ("GET", "HEAD", "POST", "DELETE")}
+        for method, path in sorted(requests):
+            for grant in ALL_GRANTS:
+                with self.subTest(grant=grant, method=method, path=path):
+                    if access_rules.decide_rest(method, path, GRANTS[grant])[0]:
+                        self.assertTrue(access_rules.decide_rest(method, path, GRANTS["write"])[0])
+
+
+class ForbiddenMessageTest(unittest.TestCase):
+    """The 403 answer names the toggle that would allow the request."""
+
+    def test_needed_grant(self) -> None:
+        for method, path, grant in NEEDED_GRANT_CASES:
+            with self.subTest(method=method, path=path):
+                self.assertEqual(access_rules.rest_needed_grant(method, path), grant)
+                # That toggle alone allows it.
+                self.assertTrue(access_rules.decide_rest(method, path, GRANTS[grant])[0])
+
+    def test_every_denied_request_is_allowed_by_the_toggle_named(self) -> None:
+        for grant, method, path, reason in REST_CASES:
+            if reason != "denied":
+                continue
+            needed = access_rules.rest_needed_grant(method, path)
+            with self.subTest(grant=grant, method=method, path=path):
+                self.assertNotIn(needed, GRANTS[grant])
+                self.assertTrue(access_rules.decide_rest(method, path, GRANTS[needed])[0])
+
+    def test_messages(self) -> None:
+        for grant, message in FORBIDDEN_MESSAGES.items():
+            with self.subTest(grant=grant):
+                self.assertEqual(access_rules.forbidden_message(grant), message)
 
 
 if __name__ == "__main__":

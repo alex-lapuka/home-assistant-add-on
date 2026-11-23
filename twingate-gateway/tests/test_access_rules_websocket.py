@@ -1,7 +1,8 @@
 """WebSocket decisions per grant: commands, frames and the authentication phase.
 
-The tables below are the WebSocket access policy: a change to what a grant
-allows must change them.
+The grants are those the three toggles of the add-on options can give
+(support.GRANTS). The tables below are the WebSocket access policy: a change
+to what a toggle allows must change them.
 """
 
 import json
@@ -10,7 +11,7 @@ import unittest
 from support import GRANTS, access_rules
 
 ALL_GRANTS = tuple(GRANTS)
-ALLOWED_REASONS = ("read", "full")
+ALLOWED_REASONS = ("read", "write")
 
 # The command types Read allows (subscribe_events only for the event types
 # below).
@@ -104,7 +105,7 @@ def nested(step: dict, levels: int) -> dict:
     return step
 
 
-# Commands blocked for every grant, Full included.
+# Commands blocked for every grant, Write included.
 ALWAYS_BLOCKED_COMMANDS = (
     # The Supervisor API with Home Assistant's own Supervisor token.
     {"type": "supervisor"},
@@ -231,33 +232,33 @@ WS_CASES = (
     ("mcp", {"type": "get_states"}, "denied"),
     ("mcp", {"type": "auth/current_user"}, "denied"),
     ("read+mcp", {"type": "get_states"}, "read"),
-    # Full: everything that is not always blocked.
-    ("full", {"type": "get_states"}, "full"),
-    ("full", {"type": "auth/current_user"}, "full"),
-    ("full", {"type": "subscribe_events"}, "full"),
-    ("full", {"type": "subscribe_events", "event_type": "call_service"}, "full"),
-    ("full", {"type": "call_service", "domain": "light", "service": "turn_on", "target": {"entity_id": "light.x"}}, "full"),
-    ("full", {"type": "call_service", "domain": "homeassistant", "service": "restart"}, "full"),
-    ("full", {"type": "render_template", "template": "{{ 1 }}"}, "full"),
-    ("full", {"type": "fire_event", "event_type": "x"}, "full"),
-    ("full", {"type": "config/entity_registry/update", "entity_id": "light.x"}, "full"),
-    ("full", {"type": "unknown/command"}, "full"),
-    ("full", script({"action": "light.turn_on", "target": {"entity_id": "light.x"}}), "full"),
-    ("full", script({"service": "script.morning"}), "full"),
-    ("full", script({"delay": "00:00:01"}, {"wait_template": "{{ true }}"}), "full"),
-    ("full", script(nested({"action": "light.turn_on"}, 10)), "full"),
+    # Write: everything that is not always blocked.
+    ("write", {"type": "get_states"}, "write"),
+    ("write", {"type": "auth/current_user"}, "write"),
+    ("write", {"type": "subscribe_events"}, "write"),
+    ("write", {"type": "subscribe_events", "event_type": "call_service"}, "write"),
+    ("write", {"type": "call_service", "domain": "light", "service": "turn_on", "target": {"entity_id": "light.x"}}, "write"),
+    ("write", {"type": "call_service", "domain": "homeassistant", "service": "restart"}, "write"),
+    ("write", {"type": "render_template", "template": "{{ 1 }}"}, "write"),
+    ("write", {"type": "fire_event", "event_type": "x"}, "write"),
+    ("write", {"type": "config/entity_registry/update", "entity_id": "light.x"}, "write"),
+    ("write", {"type": "unknown/command"}, "write"),
+    ("write", script({"action": "light.turn_on", "target": {"entity_id": "light.x"}}), "write"),
+    ("write", script({"service": "script.morning"}), "write"),
+    ("write", script({"delay": "00:00:01"}, {"wait_template": "{{ true }}"}), "write"),
+    ("write", script(nested({"action": "light.turn_on"}, 10)), "write"),
     # "action" keys inside data are data, not steps.
     (
-        "full",
+        "write",
         script({"action": "notify.mobile_app_phone", "data": {"message": "x", "data": {"actions": [{"action": "URI", "title": "Open"}]}}}),
-        "full",
+        "write",
     ),
-    ("full", script({"event": "my_event", "event_data": {"action": "hassio.host_reboot"}}), "full"),
-    ("full", script({"variables": {"action": "hassio.host_reboot"}}), "full"),
-    ("full", script({"action": "script.turn_on", "target": {"entity_id": "script.x"}, "data": {"variables": {"service": "hassio.x"}}}), "full"),
+    ("write", script({"event": "my_event", "event_data": {"action": "hassio.host_reboot"}}), "write"),
+    ("write", script({"variables": {"action": "hassio.host_reboot"}}), "write"),
+    ("write", script({"action": "script.turn_on", "target": {"entity_id": "script.x"}, "data": {"variables": {"service": "hassio.x"}}}), "write"),
     # execute_script without a sequence has nothing to check; Home Assistant
     # refuses it.
-    ("full", {"type": "execute_script"}, "full"),
+    ("write", {"type": "execute_script"}, "write"),
 )
 
 
@@ -284,7 +285,7 @@ class CommandPolicyTest(unittest.TestCase):
             with self.subTest(command_type=command_type):
                 self.assert_decision("read", {"type": command_type}, "read")
                 self.assert_decision("read+mcp", {"type": command_type}, "read")
-                self.assert_decision("full", {"type": command_type}, "full")
+                self.assert_decision("write", {"type": command_type}, "write")
                 self.assert_decision("mcp", {"type": command_type}, "denied")
                 self.assert_decision("none", {"type": command_type}, "denied")
 
@@ -308,8 +309,28 @@ class CommandPolicyTest(unittest.TestCase):
     def test_command_that_cannot_be_checked_is_refused(self) -> None:
         # Not reachable through decide_ws_frame(), which checks the type
         # first; refused rather than raising.
-        self.assertEqual(access_rules.decide_ws_command({"id": 1, "type": 5}, GRANTS["full"]), (False, "denied"))
+        self.assertEqual(access_rules.decide_ws_command({"id": 1, "type": 5}, GRANTS["write"]), (False, "denied"))
         self.assertEqual(access_rules.decide_ws_command({"id": 1, "type": None}, GRANTS["read"]), (False, "denied"))
+
+    def test_write_allows_whatever_another_grant_allows(self) -> None:
+        commands = [fields for _grant, fields, _reason in WS_CASES] + [{"type": command_type} for command_type in sorted(EXPECTED_READ_WS)]
+        for fields in commands:
+            for grant in ALL_GRANTS:
+                with self.subTest(grant=grant, command=fields):
+                    if access_rules.decide_ws_command(command(fields), GRANTS[grant])[0]:
+                        self.assertEqual(access_rules.decide_ws_command(command(fields), GRANTS["write"]), (True, "write"))
+
+    def test_needed_grant(self) -> None:
+        # Read for the allow-list (subscribe_events only for its event
+        # types), Write for everything else; the error result names it.
+        for grant, fields, reason in WS_CASES:
+            needed = access_rules.ws_needed_grant(command(fields))
+            with self.subTest(grant=grant, command=fields):
+                self.assertIn(needed, ("read", "write"))
+                self.assertIs(needed == "read", access_rules.decide_ws_command(command(fields), GRANTS["read"])[0])
+                if reason == "denied":
+                    self.assertNotIn(needed, GRANTS[grant])
+                    self.assertTrue(access_rules.decide_ws_command(command(fields), GRANTS[needed])[0])
 
 
 def frame(text: str, grant: str) -> object:
@@ -325,7 +346,8 @@ def invalid(command_id: int) -> dict:
 
 
 BLOCKED_MESSAGE = "Unauthorized: {} is blocked by the Twingate Gateway add-on for every caller."
-DENIED_MESSAGE = "Unauthorized: {} needs another grant in the Twingate Gateway add-on."
+DENIED_MESSAGE = "Unauthorized: {} needs 'Allow changes (write)' in the Twingate Gateway add-on."
+DENIED_READ_MESSAGE = "Unauthorized: {} needs 'Allow reading' in the Twingate Gateway add-on."
 
 
 class FrameTest(unittest.TestCase):
@@ -343,8 +365,18 @@ class FrameTest(unittest.TestCase):
         self.assertEqual(decision.replies, [unauthorized(7, DENIED_MESSAGE.format("render_template"))])
         self.assertEqual(decision.commands, [(7, "render_template", False, "denied")])
 
+    def test_denied_read_command_names_allow_reading(self) -> None:
+        # Not reachable through the proxy, which opens the WebSocket only
+        # with Read or Write; the message still names the right toggle.
+        decision = frame('[{"id":1,"type":"get_states"},{"id":2,"type":"call_service","domain":"light","service":"turn_on"}]', "mcp")
+        self.assertIsNone(decision.forward)
+        self.assertEqual(
+            decision.replies,
+            [unauthorized(1, DENIED_READ_MESSAGE.format("get_states")), unauthorized(2, DENIED_MESSAGE.format("call_service"))],
+        )
+
     def test_blocked_command_gets_an_error_result(self) -> None:
-        decision = frame('{"id":8,"type":"supervisor/api","endpoint":"/host/reboot","method":"post"}', "full")
+        decision = frame('{"id":8,"type":"supervisor/api","endpoint":"/host/reboot","method":"post"}', "write")
         self.assertIsNone(decision.forward)
         self.assertEqual(decision.replies, [unauthorized(8, BLOCKED_MESSAGE.format("supervisor/api"))])
         self.assertEqual(decision.commands, [(8, "supervisor/api", False, "blocked")])
@@ -391,12 +423,12 @@ class FrameTest(unittest.TestCase):
         self.assertEqual(decision.replies, [])
 
     def test_array_of_refused_commands_forwards_nothing(self) -> None:
-        decision = frame('[{"id":1,"type":"supervisor/api"},{"id":2,"type":"auth/sign_path"}]', "full")
+        decision = frame('[{"id":1,"type":"supervisor/api"},{"id":2,"type":"auth/sign_path"}]', "write")
         self.assertIsNone(decision.forward)
         self.assertEqual([reply["id"] for reply in decision.replies], [1, 2])
 
     def test_empty_array(self) -> None:
-        decision = frame("[]", "full")
+        decision = frame("[]", "write")
         self.assertIsNone(decision.forward)
         self.assertEqual((decision.replies, decision.commands, decision.close), ([], [], False))
 
@@ -421,7 +453,7 @@ class FrameTest(unittest.TestCase):
         )
         for text, reply_id, logged_id in cases:
             with self.subTest(text=text):
-                decision = frame(text, "full")
+                decision = frame(text, "write")
                 self.assertIsNone(decision.forward)
                 self.assertEqual(decision.replies, [invalid(reply_id)])
                 self.assertEqual(decision.commands, [(logged_id, "?", False, "invalid")])
@@ -430,7 +462,7 @@ class FrameTest(unittest.TestCase):
     def test_invalid_json_closes_the_connection(self) -> None:
         for text in ("{", "", "not json", '{"id":1,"type":"get_states"', "[" * 100_000 + "]" * 100_000):
             with self.subTest(text=text[:20]):
-                decision = frame(text, "full")
+                decision = frame(text, "write")
                 self.assertTrue(decision.close)
                 self.assertIsNone(decision.forward)
                 self.assertEqual(decision.replies, [])
@@ -439,13 +471,13 @@ class FrameTest(unittest.TestCase):
         # Python's json and Home Assistant's parser both keep the last value
         # of a repeated key, so the proxy decides on what Home Assistant runs.
         cases = (
-            ('{"id":1,"type":"get_states","type":"supervisor/api"}', "full", "blocked"),
+            ('{"id":1,"type":"get_states","type":"supervisor/api"}', "write", "blocked"),
             ('{"id":1,"type":"supervisor/api","type":"get_states"}', "read", "read"),
-            ('{"id":1,"type":"call_service","domain":"light","service":"turn_on","domain":"hassio"}', "full", "blocked"),
-            ('{"id":1,"type":"call_service","domain":"hassio","service":"host_reboot","domain":"light"}', "full", "full"),
+            ('{"id":1,"type":"call_service","domain":"light","service":"turn_on","domain":"hassio"}', "write", "blocked"),
+            ('{"id":1,"type":"call_service","domain":"hassio","service":"host_reboot","domain":"light"}', "write", "write"),
             ('{"id":1,"type":"subscribe_events","event_type":"state_changed","event_type":"call_service"}', "read", "denied"),
             ('{"id":1,"type":"subscribe_events","event_type":"call_service","event_type":"state_changed"}', "read", "read"),
-            ('{"id":1,"type":"execute_script","sequence":[{"action":"light.turn_on","action":"hassio.host_reboot"}]}', "full", "blocked"),
+            ('{"id":1,"type":"execute_script","sequence":[{"action":"light.turn_on","action":"hassio.host_reboot"}]}', "write", "blocked"),
         )
         for text, grant, reason in cases:
             with self.subTest(text=text):
@@ -465,7 +497,7 @@ class FrameTest(unittest.TestCase):
         )
         for text in cases:
             with self.subTest(text=text):
-                decision = frame(text, "full")
+                decision = frame(text, "write")
                 self.assertIsNone(decision.forward)
                 self.assertEqual(decision.commands[0][2:], (False, "blocked"))
 

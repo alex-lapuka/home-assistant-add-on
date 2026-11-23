@@ -27,20 +27,22 @@ functions do not use.
 
 ## What is covered
 
-- `test_access_rules_grants.py`: grants from Twingate groups (empty
-  `read_groups` gives everyone Read, union of groups, Full includes Read and
-  MCP, exact group names).
+- `test_access_rules_grants.py`: the access level from the three toggles
+  `allow_read`, `allow_mcp` and `allow_write` (every combination, Write
+  includes Read and MCP, only the value `true` turns a toggle on, all off
+  refuses everything), and its labels in the log.
 - `test_access_rules_paths.py`: decoding request paths once and refusing
   ambiguous ones (`%2f`, `%3f`, `%23`, `%25`, `%2e`, dot and empty
   segments, control characters), webhook masking, the cross-site check of
   `Origin` and `Sec-Fetch-Site`.
 - `test_access_rules_rest.py`: REST decisions per grant, the Read
-  allow-list entry by entry, and every always-blocked path for every grant.
+  allow-list entry by entry, every always-blocked path for every grant, and
+  the toggle a `403` names.
 - `test_access_rules_websocket.py`: WebSocket decisions per grant, the Read
   allow-list and event types, always-blocked command types, `call_service`
   and `execute_script` to the `hassio` and `backup` domains, arrays of
-  commands with mixed outcomes, malformed commands, repeated JSON keys and
-  the client's authentication phase.
+  commands with mixed outcomes, malformed commands, repeated JSON keys, the
+  toggle an error result names, and the client's authentication phase.
 - `test_access_rules_mcp.py`: the MCP body check (`hassio__...` tools,
   `call_action` with blocked, missing or templated actions, arrays, repeated
   keys), the UTF-8 and `Content-Type` rules, and the `/api/mcp/<id>` paths.
@@ -50,20 +52,23 @@ functions do not use.
   verified tokens, reading and re-reading the key set (with an injected
   fetcher), redirects of the key set request.
 - `test_supervisor_proxy.py`: the forwarded header lists, `_printable()`,
-  the options file, the Supervisor token on a file descriptor, the limits per
-  user and in all, and `Proxy.identify()` (one token header only, key set
-  read again at most once a minute for an unknown key ID).
+  the options file (missing or malformed toggles count as off), the
+  Supervisor token on a file descriptor, the limits per user and in all,
+  `Proxy.identify()` (one token header only, key set read again at most once
+  a minute for an unknown key ID), and `Proxy.handle()` up to the request to
+  the Supervisor (`401` without a valid token, the `403` messages per toggle,
+  the same access for every caller whatever groups its token lists).
 - `test_audit_relay.py`: `printable()`, webhook masking (also
   percent-encoded) and the audit log summaries, which never carry headers,
   query strings or client addresses.
 
 The tables in `test_access_rules_*.py` spell out the access policy: a change
-to what a grant allows, or to what is always blocked, has to change them as
+to what a toggle allows, or to what is always blocked, has to change them as
 well.
 
-Not covered: the request handling and WebSocket relay of
+Not covered: forwarding to the Supervisor and the WebSocket relay of
 `supervisor_proxy.py` (they need a running server and the Supervisor), the
-relay's file following and sockets, and the Web UI.
+relay's file following and sockets, `run.sh`, and the Web UI.
 
 ## What they check against
 

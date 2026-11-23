@@ -9,9 +9,9 @@ and listens on port 8124. The flow is:
 The Gateway adds the connection's GAT to every request it forwards
 (X-Twingate-Gateway-Token: {{jwt}}). The proxy verifies that token on every
 request and WebSocket upgrade (gat.py), takes the caller's Twingate username
-and groups from it, applies the access rules of the add-on options
-(access_rules.py) and passes allowed requests to the Supervisor's Home
-Assistant API with the add-on's own Supervisor token:
+from it, applies the access level of the add-on options, the same for every
+verified caller (access_rules.py), and passes allowed requests to the
+Supervisor's Home Assistant API with the add-on's own Supervisor token:
 
 - REST and MCP: http://supervisor/core/api/... (GET, HEAD, POST and DELETE;
   the Supervisor routes no other methods);
@@ -159,13 +159,9 @@ class Config:
         self.host_port = host_port if type(host_port) is int and 0 < host_port < 65536 else None
         hostnames = raw.get("hostnames")
         self.hostnames = [name for name in hostnames if isinstance(name, str) and name] if isinstance(hostnames, list) else []
-        groups = raw.get("groups") if isinstance(raw.get("groups"), dict) else {}
-
-        def group_list(key: str) -> list[str]:
-            value = groups.get(key)
-            return [item for item in value if isinstance(item, str) and item] if isinstance(value, list) else []
-
-        self.rules = access_rules.Rules(group_list("read"), group_list("mcp"), group_list("full"))
+        # The three toggles; a missing or non-boolean value counts as off.
+        access = raw.get("access") if isinstance(raw.get("access"), dict) else {}
+        self.grants = access_rules.grants_from_options(access.get("read"), access.get("mcp"), access.get("write"))
 
 
 def read_config(path: str) -> Config:
@@ -250,7 +246,7 @@ class Journal:
 
     def count(self, decision: str) -> None:
         self.counts["requests"] += 1
-        key = decision if decision in self.counts else "allowed" if decision in ("read", "mcp", "full") else "errors"
+        key = decision if decision in self.counts else "allowed" if decision in ("read", "mcp", "write") else "errors"
         self.counts[key] += 1
         self.changed = True
 
@@ -269,7 +265,7 @@ class Journal:
             self._unauthenticated_logged.clear()
         self._unauthenticated_logged[remote] = now
         log(f"refused a request from {remote} without a valid Twingate token for this proxy: {reason}. Answered 401. (Logged at most once a minute per address.)")
-        self.add(kind="http", user="", grant="", method=method, path=path, q=False, status=401, ms=None, decision="unauthenticated", detail=reason[:120])
+        self.add(kind="http", user="", method=method, path=path, q=False, status=401, ms=None, decision="unauthenticated", detail=reason[:120])
 
     def snapshot(self) -> bytes:
         proxy = {
@@ -316,7 +312,9 @@ class Proxy:
 
         self.aiohttp = aiohttp
         self.config = config
-        self.rules = config.rules
+        # The same for every caller, so also its label in the log.
+        self.grants = config.grants
+        self.label = access_rules.grant_label(config.grants)
         self.token = token
         self.journal = journal
         self.verifier = verifier
@@ -419,8 +417,8 @@ class Proxy:
             self.journal.unauthenticated(remote, reason, request.method if request.method.isalpha() else "?", shown_path)
             return web.Response(status=401, body=UNAUTHORIZED_BODY, content_type="text/plain")
 
-        grants = self.rules.grants(identity.groups)
-        label = access_rules.grant_label(grants)
+        grants = self.grants
+        label = self.label
         started = time.monotonic()
         if access_rules.cross_site_browser_request(request.headers.get("Origin"), request.headers.get("Sec-Fetch-Site"), request.headers.get("Host")):
             self._record(identity, label, request.method, shown_path, has_query, 403, started, "blocked", "from a web page of another site")
@@ -438,12 +436,13 @@ class Proxy:
 
         allowed, why = access_rules.decide_rest(request.method, path, grants)
         if not allowed:
-            message = (
-                "Forbidden: blocked by the Twingate Gateway add-on for every caller."
-                if why == "blocked"
-                else "Forbidden: your Twingate groups do not have a grant in the Twingate Gateway add-on that allows this request."
-            )
-            return self._finish(identity, label, request.method, shown_path, has_query, 403, started, why, self._json(403, message))
+            if why == "blocked":
+                message, detail = "Forbidden: blocked by the Twingate Gateway add-on for every caller.", None
+            else:
+                needed = access_rules.rest_needed_grant(request.method, path)
+                message, detail = access_rules.forbidden_message(needed), f"needs '{access_rules.TOGGLE_NAMES[needed]}'"
+            self._record(identity, label, request.method, shown_path, has_query, 403, started, why, detail)
+            return self._json(403, message)
         if request.method not in PROXIED_METHODS:
             response = self._json(405, "Method Not Allowed")
             response.headers["Allow"] = ", ".join(PROXIED_METHODS)
@@ -479,7 +478,6 @@ class Proxy:
         self.journal.add(
             kind="http",
             user=identity.username[:200],
-            grant=label,
             method=method if method.isalpha() and len(method) <= 16 else "?",
             path=shown_path[:600],
             q=has_query,
@@ -593,9 +591,11 @@ class Proxy:
         aiohttp = self.aiohttp
         started = time.monotonic()
         path = access_rules.WEBSOCKET_PATH
-        if access_rules.READ not in grants and access_rules.FULL not in grants:
-            response = self._json(403, "Forbidden: the WebSocket API needs the Read or Full grant in the Twingate Gateway add-on.")
-            return self._finish(identity, label, "GET", path, False, 403, started, "denied", response)
+        if access_rules.READ not in grants:
+            # Write includes Read, so this is the case with neither.
+            needed = access_rules.TOGGLE_NAMES[access_rules.READ]
+            self._record(identity, label, "GET", path, False, 403, started, "denied", f"needs '{needed}'")
+            return self._json(403, f"Forbidden: the WebSocket API needs '{needed}' in the Twingate Gateway add-on.")
         if not self.token:
             return self._finish(identity, label, "GET", path, False, 503, started, "error", self._json(503, "Service Unavailable: the add-on has no Supervisor token."))
         refused = self._take("ws", identity.username)
@@ -652,7 +652,7 @@ class Proxy:
         client = web.WebSocketResponse(heartbeat=30.0, max_msg_size=MAX_CLIENT_WS_MESSAGE, autoping=True)
         await client.prepare(request)
         self.journal.websockets += 1
-        self._record(identity, label, "GET", path, False, 101, started, "read" if access_rules.FULL not in grants else "full", "WebSocket opened")
+        self._record(identity, label, "GET", path, False, 101, started, "write" if access_rules.WRITE in grants else "read", "WebSocket opened")
         stats = {"forwarded": 0, "refused": 0}
         reason = "closed"
         try:
@@ -688,7 +688,6 @@ class Proxy:
             self.journal.add(
                 kind="ws",
                 user=identity.username[:200],
-                grant=label,
                 method="WS",
                 path="closed",
                 q=False,
@@ -716,7 +715,7 @@ class Proxy:
         """Relays messages both ways until one side closes or the token expires."""
         ws_type = self.aiohttp.WSMsgType
         name = _printable(identity.username)
-        full = access_rules.FULL in grants
+        write = access_rules.WRITE in grants
 
         async def client_to_upstream() -> str:
             while True:
@@ -735,7 +734,7 @@ class Proxy:
                         log(f"{name} [{label}] WebSocket {shown} id={command_id}{outcome}")
                         self.journal.count(why)
                         self.journal.add(
-                            kind="ws-cmd", user=identity.username[:200], grant=label, method="WS", path=shown, q=False,
+                            kind="ws-cmd", user=identity.username[:200], method="WS", path=shown, q=False,
                             status=0, ms=None, decision=why, detail=f"id {command_id}",
                         )
                     if decision.forward is not None:
@@ -744,8 +743,8 @@ class Proxy:
                         await client.send_str(json.dumps(reply, separators=(",", ":")))
                 elif message.type == ws_type.BINARY:
                     # Binary frames feed handlers that commands such as
-                    # assist_pipeline/run register; only Full can start them.
-                    if full:
+                    # assist_pipeline/run register; only Write can start them.
+                    if write:
                         await upstream.send_bytes(message.data)
                 elif message.type in (ws_type.CLOSE, ws_type.CLOSING, ws_type.CLOSED):
                     return "closed by the client"
@@ -843,8 +842,7 @@ async def serve(port: int, token: str) -> None:
         log("has no Supervisor token; every authorized request is answered 503.")
     log(f"listening on port {port} for the Gateway. Accepted Resources: address {', '.join(config.hostnames) or '(none)'} with upstream port {config.port}"
         + (f", or an IPv4 address with upstream port {config.host_port} (published host port)" if config.host_port else "") + ".")
-    for line in config.rules.describe():
-        log(f"access rule: {line}")
+    log(f"API access for every caller of the Resource: {access_rules.describe_grants(config.grants)}.")
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for signum in (15, 2):
@@ -882,22 +880,24 @@ def self_check() -> int:
         if not condition:
             failures.append(name)
 
-    rules = access_rules.Rules([], ["Agents"], ["Admins"])
-    expect("empty read gives everyone Read", rules.grants(["Other"]) == {access_rules.READ})
-    expect("full includes read and mcp", rules.grants(["Admins"]) == {access_rules.READ, access_rules.MCP, access_rules.FULL})
-    strict = access_rules.Rules(["Readers"], ["Agents"], [])
-    expect("non-empty read: no list, no grant", strict.grants(["Other"]) == frozenset())
-    expect("union of groups", strict.grants(["Readers", "Agents"]) == {access_rules.READ, access_rules.MCP})
+    grants_from = access_rules.grants_from_options
+    expect("defaults give read", Config({"network": "net", "access": {"read": True, "mcp": False, "write": False}}).grants == {access_rules.READ})
+    expect("write includes read and mcp", grants_from(False, False, True) == {access_rules.READ, access_rules.MCP, access_rules.WRITE})
+    expect("read and mcp", grants_from(True, True, False) == {access_rules.READ, access_rules.MCP})
+    expect("all off: nothing", grants_from(False, False, False) == frozenset())
+    expect("not a boolean: off", grants_from("true", 1, None) == frozenset() and Config({"network": "net"}).grants == frozenset())
     read = frozenset({access_rules.READ})
-    full = frozenset({access_rules.READ, access_rules.MCP, access_rules.FULL})
+    write = grants_from(False, False, True)
     mcp = frozenset({access_rules.MCP})
+    expect("nothing allowed with all off", not access_rules.decide_rest("GET", "/api/states", frozenset())[0])
+    expect("403 names the toggle", access_rules.forbidden_message(access_rules.rest_needed_grant("POST", "/api/template")).endswith("needs 'Allow changes (write)' in the Twingate Gateway add-on."))
     expect("read GET states", access_rules.decide_rest("GET", "/api/states", read)[0])
     expect("read POST services denied", not access_rules.decide_rest("POST", "/api/services/light/turn_on", read)[0])
     expect("read POST template denied", not access_rules.decide_rest("POST", "/api/template", read)[0])
-    expect("full POST template", access_rules.decide_rest("POST", "/api/template", full)[0])
+    expect("write POST template", access_rules.decide_rest("POST", "/api/template", write)[0])
     expect("render_template denied for read", access_rules.decide_ws_frame('{"id":20,"type":"render_template","template":"x"}', read).forward is None)
     expect("auth/current_user for read", access_rules.decide_ws_frame('{"id":21,"type":"auth/current_user"}', read).forward is not None)
-    expect("auth/sign_path still blocked", access_rules.decide_ws_frame('{"id":22,"type":"auth/sign_path","path":"/x"}', full).forward is None)
+    expect("auth/sign_path still blocked", access_rules.decide_ws_frame('{"id":22,"type":"auth/sign_path","path":"/x"}', write).forward is None)
     expect("event_type list refused, no error", access_rules.decide_ws_frame('{"id":23,"type":"subscribe_events","event_type":[]}', read).replies[0]["error"]["code"] == "unauthorized")
     for raw in ("/api/states%3fx", "/api/states%23x", "/api/services/light%3F/x"):
         expect(f"query or fragment escape {raw}", access_rules.canonical_path(raw) is None)
@@ -926,23 +926,23 @@ def self_check() -> int:
         "/api/onboarding/users",
         "/api/repairs/issues/fix",
     ):
-        expect(f"blocked {blocked_path}", access_rules.decide_rest("POST", blocked_path, full) == (False, "blocked"))
-    expect("full other service", access_rules.decide_rest("POST", "/api/services/light/turn_on", full)[0])
+        expect(f"blocked {blocked_path}", access_rules.decide_rest("POST", blocked_path, write) == (False, "blocked"))
+    expect("write other service", access_rules.decide_rest("POST", "/api/services/light/turn_on", write)[0])
     for bad in ("/api/%2e%2e/x", "/api/services/hassio%2Fhost_reboot", "//api/x", "/api/./x", "/api/%252e", "/api/x%", "/api/\\x"):
         expect(f"unclear path {bad}", access_rules.canonical_path(bad) is None)
     expect("decoded once", access_rules.canonical_path("/api/services/%68assio/x") == "/api/services/hassio/x")
     expect("webhook masked", access_rules.mask_path("/api/webhook/secret") == "/api/webhook/***")
     frame = access_rules.decide_ws_frame('[{"id":1,"type":"get_states"},{"id":2,"type":"call_service","domain":"light","service":"turn_on"}]', read)
     expect("array split", frame.forward == '[{"id":1,"type":"get_states"}]' and len(frame.replies) == 1 and frame.replies[0]["id"] == 2)
-    frame = access_rules.decide_ws_frame('{"id":3,"type":"call_service","domain":"Hassio","service":"host_reboot"}', full)
+    frame = access_rules.decide_ws_frame('{"id":3,"type":"call_service","domain":"Hassio","service":"host_reboot"}', write)
     expect("hassio action blocked", frame.forward is None and frame.replies[0]["error"]["code"] == "unauthorized")
     nested = {"id": 4, "type": "execute_script", "sequence": [{"choose": [{"conditions": [], "sequence": [{"action": "hassio.addon_stop"}]}]}]}
-    expect("nested hassio blocked", access_rules.decide_ws_frame(json.dumps(nested), full).forward is None)
+    expect("nested hassio blocked", access_rules.decide_ws_frame(json.dumps(nested), write).forward is None)
     templated = {"id": 5, "type": "execute_script", "sequence": [{"action": "{{ 'hassio' }}.addon_stop"}]}
-    expect("templated action blocked", access_rules.decide_ws_frame(json.dumps(templated), full).forward is None)
+    expect("templated action blocked", access_rules.decide_ws_frame(json.dumps(templated), write).forward is None)
     notify = {"id": 6, "type": "execute_script", "sequence": [{"action": "notify.phone", "data": {"data": {"actions": [{"action": "URI"}]}}}]}
-    expect("action key in data allowed", access_rules.decide_ws_frame(json.dumps(notify), full).forward is not None)
-    expect("supervisor/api blocked", access_rules.decide_ws_frame('{"id":7,"type":"supervisor/api","endpoint":"/x","method":"get"}', full).forward is None)
+    expect("action key in data allowed", access_rules.decide_ws_frame(json.dumps(notify), write).forward is not None)
+    expect("supervisor/api blocked", access_rules.decide_ws_frame('{"id":7,"type":"supervisor/api","endpoint":"/x","method":"get"}', write).forward is None)
     expect("subscribe all events denied for read", access_rules.decide_ws_frame('{"id":8,"type":"subscribe_events"}', read).forward is None)
     expect("subscribe state_changed for read", access_rules.decide_ws_frame('{"id":9,"type":"subscribe_events","event_type":"state_changed"}', read).forward is not None)
     expect("invalid json closes", access_rules.decide_ws_frame("{", read).close)
