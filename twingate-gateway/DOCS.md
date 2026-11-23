@@ -130,21 +130,22 @@ it in the add-on's data folder. The Gateway uses this CA to sign the TLS
 certificates it presents to Twingate Clients. Twingate Clients trust the
 Gateway only after the CA certificate is registered in Twingate.
 
-1. On the add-on's **Info** tab, select **Open Web UI**.
-2. In the **Setup** section, select **Copy** next to the CA certificate and
-   paste it into a file named `ca.pem` on the machine where you will run
-   Terraform or `curl`.
-3. In the **Home Assistant API proxy** section, note the address under
-   **Twingate Resource**, for example
+1. On the add-on's **Info** tab, select **Open Web UI**. Until the first
+   Twingate client connects, the page shows the next steps at the top and its
+   **Setup** section is open.
+2. In **Setup**, select **Copy** next to the CA certificate and paste it into
+   a file named `ca.pem` on the machine where you will run Terraform or
+   `curl`.
+3. In **Setup**, note the address under **API proxy Resource**, for example
    `a0d7b954-twingate-gateway.local.hass.io`. This is the add-on's own name
    on Home Assistant's internal network; the Gateway reaches the proxy there,
    on port `8124`.
 
-The **Setup** section also shows the certificate's subject, SHA-256
-fingerprint and expiry date, and the Gateway address you need in step 3. This
-is the public certificate only; the CA private key never leaves the add-on.
-If **Copy** does not work in your browser, select the certificate text and
-copy it.
+**Setup** also shows the certificate's subject, SHA-256 fingerprint and
+expiry date, and the **Gateway address** you need in step 3. This is the
+public certificate only; the CA private key never leaves the add-on. If
+**Copy** does not work in your browser, select the certificate text and copy
+it.
 
 The add-on also prints the CA certificate and the Resource address on every
 start, so you can copy them from the **Log** tab instead. It looks like this:
@@ -429,7 +430,7 @@ with the Read or Full grant, is:
 
 Any other Home Assistant REST endpoint works the same way, for example
 `curl http://ha-api.int/api/states`. Each request appears under
-**Recent proxied requests** in the Web UI and in the add-on log, for
+**API proxy requests** in the Web UI and in the add-on log, for
 example:
 
 ```text
@@ -697,40 +698,65 @@ self-signed certificate. The public API reference does not list this field.
 
 Select **Open Web UI** on the add-on's **Info** tab, or turn on
 **Show in sidebar** there to open it from the Home Assistant sidebar. The page
-is read-only and refreshes every 5 seconds. It shows:
+is read-only and refreshes every 5 seconds.
 
-- **Setup**: the CA certificate with a **Copy** button, its subject, SHA-256
-  fingerprint and expiry, and the Gateway address to register in Twingate.
-  The add-on cannot see the host's LAN IP address, so the address reads
-  `<home-assistant-ip>:8443` unless you opened Home Assistant by IP address;
-  then it suggests that address. The port is the host port set in the
-  **Network** section.
-- **Status**: whether the Gateway answers its health check, the Gateway
-  version and whether a newer 2.x release is available (see
-  [Gateway updates](#gateway-updates)), the Twingate network, whether the
-  Twingate signing keys are working, the static certificate, the add-on
-  version and the Gateway's uptime.
-- **Configuration**: the names of the injected request headers (never their
-  values), the certificate IP addresses, the audit log setting, the log level
-  and whether the CA is your own.
-- **Home Assistant API proxy**: whether the proxy is running, whether it has
-  loaded Twingate's signing keys, the Resource address and upstream port to
-  use, request counts, and the access rules: which groups hold Read, MCP and
-  Full.
-- **Recent proxied requests**: the newest 100 requests and WebSocket
-  commands the proxy handled, with time, Twingate user, grant, request,
-  decision (allowed, denied, blocked, no valid token, too many at once),
-  status and duration.
-- **Traffic**: open connections, closed proxy connections (connections from
-  Twingate Clients; health checks and rejected connections are not
-  included), successful and failed authentications, connections rejected
-  before a request (any connection that never completed TLS and a request,
-  including port probes and TLS handshakes that fail because the CA is not
-  registered in Twingate), HTTP responses by status class, latency, and
-  requests to the upstream, from the Gateway's metrics. The counters start
-  at zero when the add-on starts.
-- **Recent requests**: the newest 100 requests through the Gateway, from its
-  audit log, with time, Twingate user, method, path, status and duration.
+The top of the page always shows four tiles: whether the Gateway answers its
+health check (with its version and uptime), whether the Twingate signing keys
+are working, whether the API proxy is running, and the open connections.
+Below them come the notices that need action: a newer Gateway release (see
+[Gateway updates](#gateway-updates); the steps are under **How to rebuild**),
+a request list that may be out of date, and, until the first Twingate client
+has authenticated, the next steps of the setup. Everything else is in
+sections that you open and close. The header of each section sums it up in
+one line, so a closed section still tells the essential fact:
+
+- **API proxy requests** (for example `12 requests, 2 denied, 1 blocked,
+  3 users`): the newest 100 requests and WebSocket commands the proxy
+  handled, with time, Twingate user, grant, request, decision (allowed,
+  denied, blocked, no valid token, too many at once), status and duration,
+  and the counts since the proxy started.
+- **Gateway requests** (for example `40 requests, 3 × 4xx, 2 users`): the
+  newest 100 requests through the Gateway, from its audit log, with time,
+  Twingate user, method, path, status and duration. Requests through the API
+  proxy appear in both lists.
+- **Access rules** (for example `Read: everyone · MCP: Home Agents · Full:
+  Home Admins`): which groups hold Read, MCP and Full, and what each grant
+  allows.
+- **Setup** (the Gateway address and the CA fingerprint): the Gateway address
+  to register in Twingate, the API proxy's Resource address and upstream
+  port, and the CA certificate with a **Copy** button, its subject, SHA-256
+  fingerprint, expiry and source. The add-on cannot see the host's LAN IP
+  address, so the address reads `<home-assistant-ip>:8443` unless you opened
+  Home Assistant by IP address; then it suggests that address. The port is
+  the host port set in the **Network** section.
+- **Traffic** (for example `9 connections, 9 authenticated, 0 failed;
+  6 × 2xx, 3 × 4xx`), from the Gateway's metrics: closed proxy connections
+  (connections from Twingate Clients; health checks and rejected connections
+  are not included), successful and failed authentications, connections
+  rejected before a request (any connection that never completed TLS and a
+  request, including port probes and TLS handshakes that fail because the CA
+  is not registered in Twingate), HTTP responses by status class to clients
+  and from the upstream, and latency. The counters start at zero when the
+  add-on starts.
+- **Status details** (for example `Gateway 2.1.0 healthy, proxy running,
+  keys loaded`): the Gateway's health check, its version and whether a newer
+  2.x release is available, the signing keys, the API proxy's state and its
+  own signing keys, whether the Gateway request list is up to date, the
+  uptime, the static certificate and the add-on version.
+- **Configuration** (for example `Network mynetwork, log level info, audit
+  log: add-on log, 0 injected headers`): also the names of the injected
+  request headers (never their values) and the certificate IP addresses.
+
+API proxy requests is open; Gateway requests is open when `request_headers`
+is set; Setup is open until the first Twingate client has authenticated; the
+other sections start closed. A section that shows an error or a warning
+opens by itself and has a badge in its header, for example `Proxy stopped`
+under **Status details** or `Port not published` under **Setup**; it never
+closes by itself. The two request lists show the newest 10 entries;
+**Show all** lists the rest. The browser remembers which sections you opened
+or closed, your **Show all** choices, and that a client has authenticated
+with this CA, so that the next steps do not come back after a restart of the
+add-on.
 
 **Signing keys** is derived from what the add-on can observe: successful
 client authentications (the Gateway accepts a Twingate token only after
@@ -756,21 +782,21 @@ headers, query strings or webhook IDs to the Web UI. With
 `audit_log: file`, the relay reads `audit.log` instead.
 The Gateway does not wait for the relay or the Web UI: if they stop, hang,
 restart or cannot start, requests through the Gateway and the audit log are
-not affected, and only the **Recent requests** list may be out of date. The
-Web UI then shows a warning in that section when the relay has not reported
-for 15 seconds. When the relay starts again, it reads the newest entries of
+not affected, and only the **Gateway requests** list may be out of date.
+The Web UI then shows a warning at the top of the page when the relay has
+not reported for 15 seconds. When the relay starts again, it reads the newest entries of
 the copy, so requests made while it was down usually appear in the list.
 The same holds when the copy cannot be kept: if `/dev/shm` is full, new
 entries are missing from the copy, and `s6-log` keeps them in memory until
 it can write them; if the copy cannot be set up, `s6-log` copies the audit
 log to the add-on log only until the add-on restarts, and says so in the
 log. Either way requests and the add-on log are not affected, and the Web UI
-shows a warning under **Recent requests**.
+shows a warning at the top of the page.
 
 The proxy sends its state and the summaries of its newest requests to the
 Web UI itself, every 5 seconds and after each request, without ever waiting
-for it. When the proxy has not reported for 15 seconds, the Web UI says so
-under **Home Assistant API proxy**.
+for it. When the proxy has not reported for 15 seconds, the Web UI shows it as
+stopped and opens **Status details**.
 
 The memory of `s6-log` is limited to 64 MiB, enough for about 60 MB of
 entries waiting for a full `/dev/shm`, or for a single entry of about 18 MB.
@@ -978,7 +1004,7 @@ moves to each new 2.x release. The Gateway is taken when Home Assistant builds
 the add-on, that is when you install, update or rebuild it, and keeps that
 version until the next build. The log names it at every start
 (`Starting Twingate Gateway 2.1.0 on port 8443/tcp ...`), and the Web UI shows
-it under **Status**.
+it under **Status details**.
 
 To update the Gateway to the newest 2.x release, rebuild the add-on:
 
@@ -1008,16 +1034,16 @@ data about your installation; like any request, it shows Docker Hub your
 public IP address. It is not a pull and does not count against Docker Hub's
 pull rate limit.
 
-When a newer release is available, the Web UI shows a notice with the steps
-above at the top of the page, and the log says so after each start of the
+When a newer release is available, the Web UI shows a notice at the top of
+the page, with the steps above under **How to rebuild**, and the log says so after each start of the
 add-on and then at most once a day while it remains so:
 
 ```text
 Web UI: Twingate Gateway 2.2.0 is available; this add-on runs Gateway 2.1.0. To update, rebuild the add-on: ...
 ```
 
-Otherwise **Status** shows `Up to date (checked <time>)` next to the Gateway
-version. If the check fails, for example without internet access, it is tried
+Otherwise **Status details** shows `Up to date (checked <time>)` next to the
+Gateway version. If the check fails, for example without internet access, it is tried
 again after 5, 15 and then every 60 minutes. The Web UI then shows when the
 last check succeeded, or that none has yet; nothing else changes. The version
 it compares is the one the Gateway reports in its audit log, or, until the
@@ -1309,8 +1335,8 @@ The Gateway cannot reach the upstream, or the proxy cannot reach Home
 Assistant through the Supervisor. The add-on log shows a `proxy error` from
 the Gateway, for example with `connection refused`, or a `-> 502` line from
 the proxy. With the API proxy, check that the Resource's address and upstream
-port are the ones shown in the Web UI and that the proxy is running (Web UI,
-**Home Assistant API proxy**). In the request header setup, check that the
+port are the ones shown in the Web UI (**Setup**) and that the proxy is
+running (Web UI, **API proxy** tile). In the request header setup, check that the
 Resource address is the Home Assistant host's LAN IP and that the upstream
 port is the port Home Assistant answers on: `8123` on most installations, or
 `80`, the Home Assistant OS default from 2026.8. If Home Assistant serves

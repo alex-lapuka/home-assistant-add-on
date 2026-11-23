@@ -27,46 +27,93 @@
 
 <main class="tg-container tg-main">
   <h1 class="tg-title">Gateway status</h1>
-  <p class="tg-lead">Setup details, health, access rules and recent traffic of the Twingate Gateway and its Home Assistant API proxy. This page is read-only and refreshes every 5 seconds.</p>
+  <p class="tg-lead" id="lead">The Gateway and its Home Assistant API proxy as the add-on sees them. Twingate's view is in the Admin Console.</p>
 
   <div id="notice"></div>
+  <div id="next-steps"></div>
   <div id="update"></div>
   <div id="summary" class="tg-grid"></div>
 
-  <section class="tg-section" aria-labelledby="setup-heading">
-    <h2 id="setup-heading" class="tg-h2">Setup</h2>
-    <div id="setup"><p class="tg-empty">Loading…</p></div>
-  </section>
+  <div class="tg-sections">
+    <details class="tg-details" data-section="proxy-requests">
+      <summary class="tg-details__summary">
+        <h2 class="tg-details__title">API proxy requests</h2>
+        <span class="tg-details__badge"></span>
+        <span class="tg-details__digest">Loading…</span>
+      </summary>
+      <div class="tg-details__body">
+        <div id="proxy-requests"><p class="tg-empty">Loading…</p></div>
+        <p class="tg-showall" hidden><button type="button" class="tg-showall__button"></button></p>
+      </div>
+    </details>
 
-  <section class="tg-section" aria-labelledby="status-heading">
-    <h2 id="status-heading" class="tg-h2">Status</h2>
-    <div id="status"><p class="tg-empty">Loading…</p></div>
-  </section>
+    <details class="tg-details" data-section="requests">
+      <summary class="tg-details__summary">
+        <h2 class="tg-details__title">Gateway requests</h2>
+        <span class="tg-details__badge"></span>
+        <span class="tg-details__digest">Loading…</span>
+      </summary>
+      <div class="tg-details__body">
+        <div id="requests"><p class="tg-empty">Loading…</p></div>
+        <p class="tg-showall" hidden><button type="button" class="tg-showall__button"></button></p>
+      </div>
+    </details>
 
-  <section class="tg-section" aria-labelledby="configuration-heading">
-    <h2 id="configuration-heading" class="tg-h2">Configuration</h2>
-    <div id="configuration"><p class="tg-empty">Loading…</p></div>
-  </section>
+    <details class="tg-details" data-section="access">
+      <summary class="tg-details__summary">
+        <h2 class="tg-details__title">Access rules</h2>
+        <span class="tg-details__badge"></span>
+        <span class="tg-details__digest">Loading…</span>
+      </summary>
+      <div class="tg-details__body">
+        <div id="access"><p class="tg-empty">Loading…</p></div>
+      </div>
+    </details>
 
-  <section class="tg-section" aria-labelledby="proxy-heading">
-    <h2 id="proxy-heading" class="tg-h2">Home Assistant API proxy</h2>
-    <div id="proxy"><p class="tg-empty">Loading…</p></div>
-  </section>
+    <details class="tg-details" data-section="setup">
+      <summary class="tg-details__summary">
+        <h2 class="tg-details__title">Setup</h2>
+        <span class="tg-details__badge"></span>
+        <span class="tg-details__digest">Loading…</span>
+      </summary>
+      <div class="tg-details__body">
+        <div id="setup"><p class="tg-empty">Loading…</p></div>
+      </div>
+    </details>
 
-  <section class="tg-section" aria-labelledby="proxy-requests-heading">
-    <h2 id="proxy-requests-heading" class="tg-h2">Recent proxied requests</h2>
-    <div id="proxy-requests"><p class="tg-empty">Loading…</p></div>
-  </section>
+    <details class="tg-details" data-section="traffic">
+      <summary class="tg-details__summary">
+        <h2 class="tg-details__title">Traffic</h2>
+        <span class="tg-details__badge"></span>
+        <span class="tg-details__digest">Loading…</span>
+      </summary>
+      <div class="tg-details__body">
+        <div id="traffic"><p class="tg-empty">Loading…</p></div>
+      </div>
+    </details>
 
-  <section class="tg-section" aria-labelledby="traffic-heading">
-    <h2 id="traffic-heading" class="tg-h2">Traffic</h2>
-    <div id="traffic"><p class="tg-empty">Loading…</p></div>
-  </section>
+    <details class="tg-details" data-section="status">
+      <summary class="tg-details__summary">
+        <h2 class="tg-details__title">Status details</h2>
+        <span class="tg-details__badge"></span>
+        <span class="tg-details__digest">Loading…</span>
+      </summary>
+      <div class="tg-details__body">
+        <div id="status"><p class="tg-empty">Loading…</p></div>
+      </div>
+    </details>
 
-  <section class="tg-section" aria-labelledby="requests-heading">
-    <h2 id="requests-heading" class="tg-h2">Recent requests</h2>
-    <div id="requests"><p class="tg-empty">Loading…</p></div>
-  </section>
+    <details class="tg-details" data-section="configuration">
+      <summary class="tg-details__summary">
+        <h2 class="tg-details__title">Configuration</h2>
+        <span class="tg-details__badge"></span>
+        <span class="tg-details__digest">Loading…</span>
+      </summary>
+      <div class="tg-details__body">
+        <div id="configuration"><p class="tg-empty">Loading…</p></div>
+      </div>
+    </details>
+  </div>
 
   <footer class="tg-footer tg-section" id="footer">
     <p>Read-only status page of the Twingate Gateway add-on.</p>

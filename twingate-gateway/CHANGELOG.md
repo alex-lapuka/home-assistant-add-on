@@ -88,6 +88,12 @@
 - The proxy logs every request and WebSocket command with the Twingate
   username, its grants and the decision, and the Web UI shows the proxy's
   state, the access rules and the newest proxied requests.
+- The Web UI shows a summary at the top and the details in sections that
+  open and close, each summed up in one line in its header; a section with
+  an error or a warning opens by itself, the browser remembers which
+  sections you opened, long lists show the newest 10 entries with a
+  "Show all" button, and the setup steps are shown until the first Twingate
+  client connects.
 - The proxy runs as its own unprivileged user (`api-proxy`), the only
   process besides root with the Supervisor token; s6 restarts it when it
   stops, and the Gateway, its logger and the Web UI do not depend on it.
