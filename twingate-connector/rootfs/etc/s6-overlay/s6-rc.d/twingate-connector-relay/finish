@@ -1,0 +1,18 @@
+#!/bin/sh
+# ==============================================================================
+# Twingate Connector add-on: after the log relay exited.
+#
+# When the relay fails (for example because Python cannot start), waits a
+# few seconds before s6 starts it again, so that the add-on log does not get
+# the same error every second. Not when the relay is being stopped. The
+# Connector is not affected either way.
+#
+# s6 passes the exit code, or 256 and the signal number.
+# ==============================================================================
+exit_code="${1}"
+wanted_up=$(s6-svstat -o wantedup . 2>/dev/null) || wanted_up=""
+
+if [ "${exit_code}" -ne 0 ] && [ "${exit_code}" -ne 256 ] && [ "${wanted_up}" = "true" ]; then
+    sleep 4
+fi
+exit 0

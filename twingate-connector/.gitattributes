@@ -1,0 +1,5 @@
+# Keep LF line endings in the working tree on every platform. The files in
+# this folder are copied into a Linux container, where CRLF breaks run.sh
+# and the s6 service files.
+* text=auto eol=lf
+*.png binary

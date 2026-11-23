@@ -1,0 +1,21 @@
+#!/bin/sh
+# ==============================================================================
+# Twingate Connector add-on: after s6-log (the Connector's log) exited.
+#
+# s6-log exits with 0 when it is stopped, and with 111 when it cannot use its
+# log folder (it cannot create, lock or write the folder's files) or reaches
+# its memory limit (see run). After such an error, run starts s6-log without
+# the folder for the rest of the add-on's run, so that s6-log does not fail
+# again and again while the Connector's output waits in the pipe. finish
+# records this by removing a file, which works even when the disk is full. A
+# signal (for example when the system runs out of memory) does not change
+# anything: s6 starts s6-log again as before.
+#
+# s6 passes the exit code, or 256 and the signal number.
+# ==============================================================================
+exit_code="${1}"
+
+if [ "${exit_code}" -ne 0 ] && [ "${exit_code}" -ne 256 ]; then
+    rm -f ./data/use-log-dir
+fi
+exit 0
