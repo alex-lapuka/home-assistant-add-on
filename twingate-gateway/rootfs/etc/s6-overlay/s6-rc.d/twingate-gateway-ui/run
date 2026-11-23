@@ -4,9 +4,9 @@
 #
 # Runs as the unprivileged user nobody with an empty environment, so it can
 # read neither the Gateway configuration, the CA private key, the audit log
-# file nor the copy of the audit log that the relay reads. The port must
-# match ingress_port in config.yaml. s6 restarts the Web UI when it exits;
-# the Gateway is not affected.
+# file, the copy of the audit log that the relay reads nor the Supervisor
+# token. The port must match ingress_port in config.yaml. s6 restarts the
+# Web UI when it exits; the Gateway and the API proxy are not affected.
 # ==============================================================================
 set -e
 
@@ -21,6 +21,9 @@ chmod 0700 /run/s6/container_environment
 # cannot list it. New files get the group (setgid), and the Web UI makes the
 # socket writable by the group.
 install -d -m 2710 -o nobody -g audit-relay /run/twingate-gateway-ui
+# The same for the summaries of the Home Assistant API proxy, whose user is
+# in the group api-proxy only.
+install -d -m 2710 -o nobody -g api-proxy /run/twingate-gateway-proxy-ui
 
 exec s6-setuidgid nobody \
     env -i PATH=/usr/bin:/bin LANG=C.UTF-8 \

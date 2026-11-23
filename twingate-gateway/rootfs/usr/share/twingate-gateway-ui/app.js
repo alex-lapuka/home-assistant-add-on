@@ -404,7 +404,7 @@
           el('ol', 'tg-list',
             el('li', null, 'Register the CA certificate below in Twingate as an X.509 certificate authority.'),
             el('li', null, 'Create a Gateway with the Gateway address below, in the Remote Network of the Twingate Connector add-on, using that CA.'),
-            el('li', null, 'Create a Web App Resource for the Home Assistant API that uses this Gateway.')),
+            el('li', null, 'Create a Web App Resource for the Home Assistant API that uses this Gateway, with the address and upstream port shown under Home Assistant API proxy below.')),
           el('p', null, `Step-by-step instructions with Terraform and curl are on ${DOCS_HINT}.`)),
         kvTable([
           ['Gateway address', gatewayAddress(data)],
@@ -522,10 +522,14 @@
       const names = startup.request_header_names || [];
       const ips = startup.certificate_ip_addresses || [];
       const ca = startup.ca || {};
+      const tokenHeader = startup.proxy && startup.proxy.token_header;
       return kvTable([
-        ['Injected request headers', names.length
-          ? [el('div', null, names.map((name, index) => [index ? ' ' : null, code(name)])), muted('Names only. Header values are never shown.')]
-          : muted('None.')],
+        ['Injected request headers', [
+          names.length
+            ? [el('div', null, names.map((name, index) => [index ? ' ' : null, code(name)])), muted('Names only. Header values are never shown.')]
+            : muted('None configured.'),
+          tokenHeader ? muted('The add-on also adds ', code(tokenHeader), ', the client\'s Twingate token, to every Web App request, for the Home Assistant API proxy.') : null,
+        ]],
         ['Certificate IP addresses', ips.length ? ips.join(', ') : muted('None.')],
         ['Audit log', startup.audit_log === 'file'
           ? [el('div', null, 'File in the add-on configuration folder'), muted(code(startup.audit_log_file || '/config/audit.log'), ' (rotated at 10 MiB, 3 compressed backups)')]
@@ -535,6 +539,159 @@
           ? [el('div', null, 'Your own CA'), muted(code(ca.certificate_file || ''))]
           : [el('div', null, 'Created by this add-on'), muted('Kept in the add-on\'s data folder.')]],
       ]);
+    });
+  }
+
+  // --------------------------------------------------------------------------
+  // Home Assistant API proxy
+  // --------------------------------------------------------------------------
+
+  const GRANTS = [
+    ['read', 'Read', 'Reads over REST and WebSocket (states, registries, history, statistics); no actions and no templates.', 'Everyone with access to the Resource'],
+    ['mcp', 'MCP', 'The Model Context Protocol endpoint /api/mcp. What it can do is set in Home Assistant\'s MCP Server settings: by default that includes a tool that performs any action on any entity, not only on entities exposed to Assist. The proxy still refuses hassio and backup actions and the Supervisor\'s tools.', 'Nobody'],
+    ['full', 'Full', 'Everything that is not always blocked; includes Read and MCP. A block-list, not a security boundary.', 'Nobody'],
+  ];
+
+  const DECISIONS = {
+    read: ['success', 'Allowed (Read)'],
+    mcp: ['success', 'Allowed (MCP)'],
+    full: ['success', 'Allowed (Full)'],
+    denied: ['warning', 'Denied'],
+    blocked: ['danger', 'Blocked'],
+    invalid: ['warning', 'Refused'],
+    unauthenticated: ['neutral', 'No valid token'],
+    limited: ['warning', 'Too many at once'],
+    error: ['danger', 'Failed'],
+    closed: ['neutral', 'Closed'],
+  };
+
+  function proxyStatePill(proxy) {
+    if (!proxy || !proxy.seen) {
+      return pill('neutral', 'Starting');
+    }
+    if (!proxy.reporting) {
+      return pill('danger', 'Not reporting');
+    }
+    if (proxy.state !== 'running') {
+      return pill('warning', proxy.state || 'Starting');
+    }
+    return pill('success', 'Running');
+  }
+
+  function groupList(names, empty) {
+    if (!names || !names.length) {
+      return el('span', 'tg-muted', empty);
+    }
+    return el('div', null, names.map((name, index) => [index ? ' ' : null, code(name)]));
+  }
+
+  function renderProxy(data) {
+    const startup = data.startup || {};
+    const settings = startup.proxy;
+    const proxy = data.proxy || {};
+    const keys = proxy.keys || {};
+    const counts = proxy.counts || {};
+    render('proxy', [data.ready, settings, proxy.seen, proxy.reporting, proxy.state, keys.ok, keys.error, proxy.token, counts, proxy.websockets,
+      Math.floor((proxy.silent_seconds || 0) / 15)], () => {
+      if (!data.ready) {
+        return el('p', 'tg-empty', 'Available when the Gateway has started.');
+      }
+      if (!settings) {
+        return el('p', 'tg-empty', 'The proxy configuration is not available. The add-on\'s Log tab shows why.');
+      }
+      const nodes = [];
+      if (proxy.seen && !proxy.reporting) {
+        nodes.push(callout('warning', 'The proxy is not reporting',
+          el('p', null, `The Home Assistant API proxy has not reported for more than 15 seconds. It is restarted automatically when it stops; the Gateway and the request_headers setup are not affected. If this stays, check the add-on's Log tab.`)));
+      } else if (proxy.reporting && !proxy.token) {
+        nodes.push(callout('danger', 'No Supervisor token',
+          el('p', null, 'The proxy has no Supervisor token, so it cannot reach Home Assistant. Restart the add-on.')));
+      }
+      const hostAddress = data.host_hint || '<home-assistant-ip>';
+      const resource = [
+        el('div', null, 'Address ', code(settings.dns_name || '<add-on host name>.local.hass.io'), ', upstream port ', code(String(settings.port)), '.'),
+        muted('The Gateway reaches the proxy inside the add-on, so no port needs to be published. Clients use the Resource alias; for the WebSocket API they authenticate with any non-empty placeholder token.'),
+      ];
+      if (settings.host_port_state === 'mapped' && settings.host_port) {
+        resource.push(muted('Also published on host port ', code(String(settings.host_port)), ': a Resource with address ', code(hostAddress), ' and upstream port ', code(String(settings.host_port)), ' works too, but the port is then open on your LAN.'));
+      }
+      nodes.push(kvTable([
+        ['State', [el('div', null, proxyStatePill(proxy)),
+          proxy.started_at ? muted(`Since ${dateTime(proxy.started_at)}. ${num(proxy.websockets)} WebSocket ${proxy.websockets === 1 ? 'connection' : 'connections'} open.`) : null]],
+        ['Signing keys', proxy.seen
+          ? [el('div', null, pill(keys.ok ? 'success' : 'warning', keys.ok ? 'Loaded' : 'Not loaded')),
+            muted(keys.ok ? `${num(keys.keys)} ${keys.keys === 1 ? 'key' : 'keys'}, read ${clockTime(keys.checked_at)}. The proxy verifies the caller's Twingate token with them.` : `Requests are refused until the keys can be read (${keys.error || 'not read yet'}).`)]
+          : '–'],
+        ['Twingate Resource', resource],
+        ['Requests', proxy.seen
+          ? muted(`${num(counts.requests)} since the proxy started: ${num(counts.allowed)} allowed, ${num(counts.denied)} denied, ${num(counts.blocked)} blocked for every caller, ${num(counts.limited)} refused for too many at once, ${num(counts.unauthenticated)} without a valid token.`)
+          : '–'],
+      ]));
+      nodes.push(el('h3', 'tg-h3', 'Access rules'));
+      const groups = settings.groups || {};
+      nodes.push(table([
+        { label: 'Grant' },
+        { label: 'Who' },
+        { label: 'Allows' },
+      ], GRANTS.map(([key, label, allows, empty]) => [
+        el('strong', null, label),
+        groupList(groups[key], empty),
+        allows,
+      ]), 'tg-table--stack'));
+      const readEmpty = !(groups.read && groups.read.length);
+      nodes.push(el('p', 'tg-muted tg-small',
+        readEmpty
+          ? 'Read is open: everyone Twingate lets through can read all states. Name at least one group in read_groups to limit it; callers in none of the three lists then get no access.'
+          : 'Callers in none of the three lists get no access.',
+        ' A caller holds the grants of all its Twingate groups. Every caller acts as Home Assistant\'s Supervisor user, an administrator. Direct routes into the Supervisor and the host, account and token management and backups are blocked for everyone; with Full they remain reachable indirectly, for example through automations. Group names are matched exactly.'));
+      return nodes;
+    });
+  }
+
+  function proxyRequestText(record) {
+    if (record.kind === 'ws-cmd') {
+      return ['WebSocket ', el('span', 'tg-mono tg-break', record.path || '?'), record.detail ? el('span', 'tg-muted', ` (${record.detail})`) : null];
+    }
+    if (record.kind === 'ws') {
+      return ['WebSocket closed', record.detail ? el('span', 'tg-muted', ` (${record.detail})`) : null];
+    }
+    return [`${record.method} `, el('span', 'tg-mono tg-break', record.path || '/', record.q ? el('span', 'tg-muted', '?…') : null)];
+  }
+
+  function renderProxyRequests(data) {
+    const proxy = data.proxy || {};
+    render('proxy-requests', [data.ready, proxy.seen, proxy.records], () => {
+      if (!data.ready) {
+        return el('p', 'tg-empty', 'Available when the Gateway has started.');
+      }
+      const nodes = [el('p', null, 'The newest 100 requests and WebSocket commands the proxy handled since it started, with the caller\'s Twingate user. Kept in memory only. Query strings and tokens are never shown, and webhook IDs are masked (/api/webhook/***). Every one is also logged to the add-on\'s Log tab.')];
+      const records = proxy.records || [];
+      if (!records.length) {
+        nodes.push(el('p', 'tg-empty', 'No proxied requests yet.'));
+        return nodes;
+      }
+      const rows = records.map((record) => {
+        const [kind, label] = DECISIONS[record.decision] || DECISIONS.error;
+        return [
+          clockTime(record.t),
+          record.user || '–',
+          record.grant || '–',
+          el('span', null, proxyRequestText(record)),
+          pill(kind, label),
+          record.status ? String(record.status) : '–',
+          millis(record.ms),
+        ];
+      });
+      nodes.push(table([
+        { label: 'Time', cellClass: 'tg-nowrap' },
+        { label: 'User', cellClass: 'tg-break' },
+        { label: 'Grant' },
+        { label: 'Request' },
+        { label: 'Decision' },
+        { label: 'Status' },
+        { label: 'Duration', numeric: true },
+      ], rows, 'tg-table--stack tg-table--compact'));
+      return nodes;
     });
   }
 
@@ -715,6 +872,8 @@
       renderSetup(data);
       renderStatus(data);
       renderConfiguration(data);
+      renderProxy(data);
+      renderProxyRequests(data);
       renderTraffic(data);
       renderRequests(data);
       renderFooter(data);

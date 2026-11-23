@@ -14,11 +14,15 @@ FROM twingate/gateway:2 AS gateway
 FROM ghcr.io/home-assistant/base:3.24-2026.11.0@sha256:58422480a299b16b6ea376c2167463206d430619ed02b40cd687c8bd6875519e
 
 # openssl creates and checks the CA used for on-demand TLS certificates.
-# python3 runs the Web UI and the audit log relay (standard library only);
-# '!pyc' leaves out the precompiled standard library (about 11 MiB), the
-# checks below compile only the modules that are used.
+# python3 runs the Web UI and the audit log relay (standard library only) and
+# the Home Assistant API proxy, which also uses aiohttp (HTTP and WebSocket)
+# and cryptography (ES256 signatures of Twingate tokens), both prebuilt from
+# the base image's Alpine repository, so nothing is compiled when Home
+# Assistant builds the add-on. '!pyc' leaves out the precompiled modules
+# (about 11 MiB for the standard library alone); the checks below compile
+# only the modules that are used.
 # bash, bashio, jq and ca-certificates are already part of the base image.
-RUN apk add --no-cache openssl python3 '!pyc'
+RUN apk add --no-cache openssl python3 py3-aiohttp py3-cryptography '!pyc'
 
 COPY --from=gateway /gateway /usr/local/bin/twingate-gateway
 COPY --from=gateway /LICENSE /usr/share/licenses/twingate-gateway/LICENSE
@@ -26,16 +30,19 @@ COPY --from=gateway /LICENSE /usr/share/licenses/twingate-gateway/LICENSE
 # s6-overlay services: the Gateway (twingate-gateway, started by /run.sh),
 # s6-log for its standard output (twingate-gateway-log), which keeps a copy
 # of the audit log in /dev/shm, the audit log relay for the Web UI
-# (twingate-gateway-relay) and the Web UI (twingate-gateway-ui).
+# (twingate-gateway-relay), the Web UI (twingate-gateway-ui) and the Home
+# Assistant API proxy (twingate-gateway-proxy).
 COPY rootfs /
 COPY icon.png /usr/share/twingate-gateway-ui/icon.png
 COPY run.sh /
 
 # s6-log runs as its own unprivileged user, audit-log, the relay as
-# audit-relay and the Web UI as nobody. The checks test the Web UI and the
-# relay. Run as root first, they compile the Python modules they import, so
-# that they start quickly; run again as the unprivileged users, they fail the
-# build if those users cannot read a file the services need.
+# audit-relay, the API proxy as api-proxy and the Web UI as nobody. The
+# checks test the Web UI, the relay and the proxy. Run as root first, they
+# compile the Python modules they import (including aiohttp and
+# cryptography), so that they start quickly; run again as the unprivileged
+# users, they fail the build if those users cannot read a file the services
+# need.
 # Last, gateway_version.py records the version of the Gateway copied above
 # for the Web UI: it starts the Gateway as nobody with a configuration that
 # cannot start and reads the version from its first log line, without any
@@ -45,14 +52,18 @@ RUN addgroup -S audit-relay \
     && adduser -S -D -H -h /nonexistent -s /sbin/nologin -G audit-relay audit-relay \
     && addgroup -S audit-log \
     && adduser -S -D -H -h /nonexistent -s /sbin/nologin -G audit-log audit-log \
+    && addgroup -S api-proxy \
+    && adduser -S -D -H -h /nonexistent -s /sbin/nologin -G api-proxy api-proxy \
     && chmod a+x /run.sh /etc/s6-overlay/s6-rc.d/*/run /etc/s6-overlay/s6-rc.d/*/finish \
-    && python3 -I -m compileall -q /usr/lib/twingate-gateway-ui \
+    && python3 -I -m compileall -q /usr/lib/twingate-gateway-ui /usr/lib/twingate-gateway-proxy \
     && python3 -I /usr/lib/twingate-gateway-ui/gateway_ui.py --check \
     && python3 -I /usr/lib/twingate-gateway-ui/audit_relay.py --check \
     && python3 -I /usr/lib/twingate-gateway-ui/gateway_version.py --check \
-    && chmod -R a+rX /usr/lib/twingate-gateway-ui /usr/share/twingate-gateway-ui \
+    && python3 -I /usr/lib/twingate-gateway-proxy/supervisor_proxy.py --check \
+    && chmod -R a+rX /usr/lib/twingate-gateway-ui /usr/share/twingate-gateway-ui /usr/lib/twingate-gateway-proxy \
     && s6-setuidgid nobody python3 -I /usr/lib/twingate-gateway-ui/gateway_ui.py --check \
     && s6-setuidgid audit-relay python3 -I /usr/lib/twingate-gateway-ui/audit_relay.py --check \
+    && s6-setuidgid api-proxy python3 -I /usr/lib/twingate-gateway-proxy/supervisor_proxy.py --check \
     && install -d -m 0755 /usr/share/twingate-gateway \
     && { s6-setuidgid nobody python3 -I /usr/lib/twingate-gateway-ui/gateway_version.py \
         --detect /usr/local/bin/twingate-gateway >/usr/share/twingate-gateway/version || true; } \

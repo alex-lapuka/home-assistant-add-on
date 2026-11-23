@@ -27,7 +27,7 @@
 
 <main class="tg-container tg-main">
   <h1 class="tg-title">Gateway status</h1>
-  <p class="tg-lead">Setup details, health and recent traffic of the Twingate Gateway. This page is read-only and refreshes every 5 seconds.</p>
+  <p class="tg-lead">Setup details, health, access rules and recent traffic of the Twingate Gateway and its Home Assistant API proxy. This page is read-only and refreshes every 5 seconds.</p>
 
   <div id="notice"></div>
   <div id="update"></div>
@@ -46,6 +46,16 @@
   <section class="tg-section" aria-labelledby="configuration-heading">
     <h2 id="configuration-heading" class="tg-h2">Configuration</h2>
     <div id="configuration"><p class="tg-empty">Loading…</p></div>
+  </section>
+
+  <section class="tg-section" aria-labelledby="proxy-heading">
+    <h2 id="proxy-heading" class="tg-h2">Home Assistant API proxy</h2>
+    <div id="proxy"><p class="tg-empty">Loading…</p></div>
+  </section>
+
+  <section class="tg-section" aria-labelledby="proxy-requests-heading">
+    <h2 id="proxy-requests-heading" class="tg-h2">Recent proxied requests</h2>
+    <div id="proxy-requests"><p class="tg-empty">Loading…</p></div>
   </section>
 
   <section class="tg-section" aria-labelledby="traffic-heading">

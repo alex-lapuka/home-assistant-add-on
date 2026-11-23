@@ -8,11 +8,13 @@ access the Home Assistant API through Twingate without a Home Assistant
 credential.
 
 It runs the [Twingate Gateway](https://github.com/Twingate/gateway) in Web App
-mode. The Gateway adds `Authorization: Bearer <long-lived-token>` to
-every request it forwards to Home Assistant, for the REST API and the Model
-Context Protocol endpoint `/api/mcp`. Access is granted and revoked in Twingate
-per user, group or service account. It works together with the Twingate
-Connector add-on from this repository.
+mode, together with a proxy that reaches Home Assistant through the
+Supervisor, so no long-lived token is needed. The proxy identifies each caller
+by its Twingate token and gives Twingate groups Read, MCP or Full access to
+the REST API, the Model Context Protocol endpoint `/api/mcp` and the WebSocket
+API. Access to the Resource is granted and revoked in Twingate per user,
+group or service account. It works together with the Twingate Connector
+add-on from this repository.
 
 This add-on is experimental. For setup, see the [documentation](DOCS.md) (the
 **Documentation** tab in Home Assistant).
